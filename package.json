@@ -1,6 +1,6 @@
 {
   "name": "commandcodego-manager",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "description": "Command Code 订阅反向代理 —— OpenAI/Anthropic 兼容端点 + Web 管理界面",
   "license": "MIT",
