@@ -18,3 +18,9 @@ services:
     volumes:
       # SQLite 库 + config.json 全在数据目录,升级重建容器不丢数据
       - ./data:/app/data
+      # 「一键导入」可选:CLI 登录凭证只读挂载进容器。检测读的是容器内文件系统的
+      # /root/.commandcode/auth.json,宿主机上 cmd login 的凭证默认看不见——
+      # root 用户在宿主机登录过 CLI 后,取消下面这行注释并 docker compose up -d 即可;
+      # 非 root 用户改为 ~/.commandcode:/cc-auth:ro 并在 environment 加
+      # CCP_CLI_AUTH_FILE=/cc-auth/auth.json。不挂载就走「批量导入」粘贴 user_* 密钥
+      # - /root/.commandcode:/root/.commandcode:ro

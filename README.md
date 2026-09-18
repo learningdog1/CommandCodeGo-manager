@@ -197,6 +197,13 @@ docker compose logs -f            # 确认启动
 - 容器内已设 `HOST=0.0.0.0 PORT=3050 CCP_DATA_DIR=/app/data`;compose 端口绑 `0.0.0.0`
   (公网/局域网直接可达,管理界面由 `CCP_ADMIN_TOKEN` 保护),数据落宿主机 `./data/`
   (SQLite 库 + config.json),升级重建不丢。
+- **「一键导入」在 Docker 下需挂载凭证**:密钥管理页对 CLI 登录的自动检测读的是**容器内**
+  的 `~/.commandcode/auth.json`(root 即 `/root/.commandcode/auth.json`),宿主机上 `cmd login`
+  产生的凭证默认进不了容器,检测不到。root 用户在宿主机执行过 `cmd login` 后,在 compose 的
+  `volumes` 加一行 `- /root/.commandcode:/root/.commandcode:ro` 再 `docker compose up -d`
+  即可(容器内按原路径解析,无需其他配置);非 root 用户挂 `~/.commandcode:/cc-auth:ro` 并在
+  `environment` 设 `CCP_CLI_AUTH_FILE=/cc-auth/auth.json`。也可以跳过一键导入,直接用
+  「批量导入」粘贴 `user_*` 密钥,效果相同。
 - 监听地址/端口**不进**管理界面设置(会被环境变量固定,设置页已禁改):对外端口改
   compose 的 `ports`;仅需本机+反代时可改回 `127.0.0.1:3050:3050`。
 - 首次配置:浏览器打开管理界面输入 admin token 后配置,或直接编辑宿主机 `./data/config.json`
@@ -224,6 +231,9 @@ npm test                   # 92 个测试(mock 上游,无需真实 key)
    软件会自动检测本机 CLI 登录(`~/.commandcode/auth.json`),点「一键导入」即可——
    Go 套餐没有 Provider API 权限,但 CLI 使用的 `user_*` 密钥在代理所走的
    `/alpha/generate` 端点上完全可用,这正是本软件能把 Go 订阅反代出来的原因。
+   注意:检测的是**代理进程所在机器**的文件系统——服务器/Docker 部署时需把宿主机的
+   凭证目录挂载进容器(见「方式三」),在你自己电脑上 `cmd login` 是检测不到的;
+   不方便挂载就直接用「批量导入」,效果相同。
 2. **多账户**:推荐「批量导入」—— 在 commandcode.ai 网页后台(Studio → API keys)为每个账号
    生成/复制密钥,回到「密钥管理」点「批量导入」,一行一个粘贴即可,无需在 CLI 里退出重登;
    名称自动取各账号的 commandcode 账户名,重复导入自动去重。也可在 CLI 里 `cmd login`

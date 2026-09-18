@@ -220,7 +220,7 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
     }
     if (req.method === 'POST' && path === '/cc-cli/import') {
       const d = detectCliAuth(maskKey);
-      if (!d.installed) return end(res, 404, { error: '未检测到 commandcode CLI 登录(需先安装 CLI 并执行 cmd login)' });
+      if (!d.installed) return end(res, 404, { error: `未检测到 commandcode CLI 登录(检测路径 ${d.path};需在代理所在机器安装 CLI 并执行 cmd login,Docker 部署需挂载凭证目录,见 README)` });
       const existing = await findUpstreamKeyByApiKey(d.key);
       if (existing) return end(res, 200, { existing: true, id: existing.id, name: existing.name });
       // 先用通用默认名建 key,导入后立刻拉一次账户信息,把名称换成 commandcode 账户名

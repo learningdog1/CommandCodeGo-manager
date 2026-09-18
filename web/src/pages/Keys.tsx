@@ -229,8 +229,11 @@ function UpstreamPanel({ rows, clients, reload }: {
             title={cli === null ? '加载中…' : '还没有上游密钥'}
             hint={cli?.installed
               ? '点上方「一键导入」即可使用你的 commandcode 订阅登录。'
-              : '推荐:安装 commandcode 命令行并执行 cmd login,之后这里会自动检测、一键导入;' +
-                '或在 commandcode.ai 网页后台的 API keys 页面生成 user_* 密钥后手动添加。'} />
+              : `未检测到 CLI 登录(服务端检测路径 ${cli?.path ?? '~/.commandcode/auth.json'})。` +
+                '本机部署:安装 commandcode 命令行并执行 cmd login,这里会自动检测、一键导入。' +
+                '服务器/Docker 部署:检测的是服务端文件系统,在你自己电脑上登录不会被发现——' +
+                '把宿主机的 ~/.commandcode 只读挂载进容器(见 README「方式三」)后重启即可,' +
+                '或直接点右上角「批量导入」,粘贴 user_* 密钥效果相同。'} />
         ) : (
           <Table>
             <thead>
