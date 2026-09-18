@@ -10,8 +10,18 @@ import { CFG } from '../config.mjs';
 import { log } from '../log.mjs';
 import { CC_VERSION } from './upstream.mjs';
 import { slugifyProjectPath, DEVICE_PROFILE } from './fingerprint.mjs';
-import { listUpstreamKeys, getUpstreamKeyById } from '../store/keys.mjs';
+import { listUpstreamKeys, getUpstreamKeyById, renameUpstreamKey } from '../store/keys.mjs';
 import { syncFromWindowLimits, getWindowState, setManualSwitch } from './window-state.mjs';
+
+// 账户展示名:commandcode 账户名(userName)优先,退回邮箱前缀,再退回通用默认。
+// 导入与存量迁移都用它命名上游 key,避免一排「CommandCode CLI 登录」分不清谁是谁。
+const DEFAULT_KEY_NAMES = new Set(['CommandCode CLI 登录', 'CommandCode 账户']);
+function accountDisplayName(whoami) {
+  if (whoami?.userName) return whoami.userName;
+  const email = whoami?.email;
+  if (email && email.includes('@')) return email.slice(0, email.indexOf('@'));
+  return 'CommandCode 账户';
+}
 
 // 套餐 → 月度信用总额(CLI 的 Xn 表):月度模板条的上限从这里来。
 // credits 接口只报剩余;未知套餐(上游新档位)时 total=null,前端退化为只显示剩余。
@@ -160,7 +170,22 @@ async function refreshKey(key) {
     cache.set(key.id, entry);
     // 窗口状态与用量数据同步:到顶 → 标记到 resetAt;已释放 → 清除(live 标记随之收敛)
     syncFromWindowLimits(key.id, entry.data?.windowLimits ?? null);
-    return entry;
+    // 默认名迁移:导入时未取到账户名的 key,拿到 whoami 后按 commandcode 账户名重命名
+    // (用户自定义的名称不动 —— 只认两条默认名)
+    let out = key;
+    if (entry.data?.whoami && DEFAULT_KEY_NAMES.has(key.name)) {
+      const displayName = accountDisplayName(entry.data.whoami);
+      if (displayName !== key.name) {
+        try {
+          await renameUpstreamKey(key.id, displayName);
+          log('info', 'Upstream key renamed to account name', { keyId: key.id, name: displayName });
+          out = { ...key, name: displayName };
+        } catch (e) {
+          log('warn', 'Upstream key rename failed', { keyId: key.id, error: e.message });
+        }
+      }
+    }
+    return { key: out, entry };
   })();
   inflight.set(key.id, p);
   try { return await p; } finally { inflight.delete(key.id); }
@@ -180,9 +205,9 @@ export async function refreshAccountUsage(id) {
   if (id != null) {
     const key = await getUpstreamKeyById(id);
     if (!key) return { notFound: true };
-    const entry = await refreshKey(key);
+    const { key: finalKey, entry } = await refreshKey(key);
     return {
-      rows: [rowOf(key, entry)],
+      rows: [rowOf(finalKey, entry)],
       refreshed: entry.data ? 1 : 0,
       failed: entry.data ? 0 : 1,
     };
@@ -193,15 +218,15 @@ export async function refreshAccountUsage(id) {
   const CONCURRENCY = 3;
   for (let i = 0; i < actives.length; i += CONCURRENCY) {
     const batch = actives.slice(i, i + CONCURRENCY);
-    const entries = await Promise.all(batch.map(async k => {
+    const results = await Promise.all(batch.map(async k => {
       const full = await getUpstreamKeyById(k.id);
       return full ? refreshKey(full) : null;
     }));
     batch.forEach((k, j) => {
-      const e = entries[j];
-      if (!e) return;
-      rows.push(rowOf(k, e));
-      if (e.data) refreshed++; else failed++;
+      const r = results[j];
+      if (!r) return;
+      rows.push(rowOf(r.key, r.entry));
+      if (r.entry.data) refreshed++; else failed++;
     });
   }
   return { rows, refreshed, failed };

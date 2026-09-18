@@ -194,8 +194,15 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
       if (!d.installed) return end(res, 404, { error: '未检测到 commandcode CLI 登录(需先安装 CLI 并执行 cmd login)' });
       const existing = await findUpstreamKeyByApiKey(d.key);
       if (existing) return end(res, 200, { existing: true, id: existing.id, name: existing.name });
-      const created = await createUpstreamKey({ name: 'CommandCode CLI 登录', apiKey: d.key });
-      return end(res, 201, created);
+      // 先用通用默认名建 key,导入后立刻拉一次账户信息,把名称换成 commandcode 账户名
+      // (whoami 失败保持默认名,后续用量刷新拿到账户名时会自动迁移)
+      const created = await createUpstreamKey({ name: 'CommandCode 账户', apiKey: d.key });
+      let name = created.name;
+      try {
+        const r = await refreshAccountUsage(created.id);
+        if (r.rows?.[0]?.name) name = r.rows[0].name;
+      } catch { /* 命名失败不影响导入 */ }
+      return end(res, 201, { ...created, name });
     }
 
     // ── 上游 key ──

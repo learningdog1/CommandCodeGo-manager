@@ -1,12 +1,13 @@
 // 模型页(花销版重构):当前生效模型目录 × 官方公开价目 × 本地 30 天用量,
 // 每个模型展示单价($/1M 输入/输出/缓存读)、实际用量与参考成本,方便按价格选型。
+// 厂商分组默认折叠(点厂商名展开,头部直接给该组参考成本),搜索/筛选时自动展开。
 // 成本为估算值(官方价目 × 本地 token 计量),实际扣费以账号信用为准。
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Coins, Filter, RefreshCw, Search, Sigma, Zap } from 'lucide-react';
+import { Boxes, ChevronDown, Coins, RefreshCw, Search, Sigma, UnfoldVertical, Zap } from 'lucide-react';
 import { fetchUsage, refreshModels, type ModelItem, type UsageRow } from '../api';
 import { CATALOG_BY_ID } from '../model-catalog';
 import {
-  Badge, Button, Card, CardBody, CardHeader, EmptyState, Input, Loading, StatCard, Tabs,
+  Badge, Button, Card, EmptyState, Input, Loading, StatCard, Tabs,
   fmtInt, fmtK, toast,
 } from '../ui';
 
@@ -96,6 +97,8 @@ export function Models() {
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
   const [view, setView] = useState('all'); // all = 全部模型,used = 仅看已使用
+  // 展开的厂商(默认全折叠;搜索/仅看已使用时自动全展开 —— 结果已被过滤,折叠碍事)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -160,7 +163,7 @@ export function Models() {
     return { cost, requests, tokens, usedModels: usage ? [...usage.values()].filter(u => u.requests > 0).length : 0 };
   }, [usage]);
 
-  // 搜索 + 视图过滤 + 厂商分组(组内按参考成本降序,未用过的按 id)
+  // 搜索 + 视图过滤 + 厂商分组(组内按参考成本降序,未用过的按 id;组头汇总该组成本)
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
     const rows = (models ?? []).filter(m => {
@@ -187,10 +190,26 @@ export function Models() {
         vendor,
         // 组内:有参考成本的在前(降序),其余按 id
         items: items.sort((a, b) => costOf(b.id) - costOf(a.id) || a.id.localeCompare(b.id)),
+        cost: items.reduce((n, m) => n + Math.max(0, costOf(m.id)), 0),
       }))
       .sort((a, b) => a.vendor.localeCompare(b.vendor));
   }, [models, usage, query, view]);
   const matched = groups.reduce((n, g) => n + g.items.length, 0);
+
+  // 进入过滤态(搜索/仅看已使用)自动展开全部组
+  useEffect(() => {
+    if (query.trim() || view === 'used') setExpanded(new Set(groups.map(g => g.vendor)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在过滤条件变化时联动,groups 变化不重置用户手动展开
+  }, [query, view]);
+
+  const toggleGroup = (vendor: string) =>
+    setExpanded(prev => {
+      const s = new Set(prev);
+      if (s.has(vendor)) s.delete(vendor); else s.add(vendor);
+      return s;
+    });
+  const allOpen = groups.length > 0 && groups.every(g => expanded.has(g.vendor));
+  const toggleAll = () => setExpanded(allOpen ? new Set() : new Set(groups.map(g => g.vendor)));
 
   return (
     <div className="space-y-5">
@@ -204,7 +223,7 @@ export function Models() {
           sub={`已用模型 ${totals.usedModels} 个`} icon={<Sigma size={18} />} tone="sky" />
         <StatCard label="可用模型" value={models ? fmtInt(models.length) : '…'}
           unit={models && usage ? `已用 ${totals.usedModels}` : undefined}
-          icon={<Filter size={18} />} tone="ok" />
+          icon={<Boxes size={18} />} tone="ok" />
       </div>
 
       {/* ── 顶部:搜索 / 视图 / 刷新 ── */}
@@ -214,6 +233,12 @@ export function Models() {
           <Input className="pl-8" value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索模型 id…" />
         </div>
         <Tabs items={[{ id: 'all', label: '全部模型' }, { id: 'used', label: '仅看已使用' }]} value={view} onChange={setView} />
+        {matched > 0 && (
+          <Button size="sm" variant="ghost" onClick={toggleAll} title={allOpen ? '收起全部厂商' : '展开全部厂商'}>
+            <UnfoldVertical size={13} className={`transition-transform duration-300 ${allOpen ? 'rotate-180' : ''}`} />
+            {allOpen ? '收起全部' : '展开全部'}
+          </Button>
+        )}
         <Button onClick={() => void refresh()} loading={busy}><RefreshCw size={14} />一键刷新</Button>
         {models && (
           <span className="tnum ml-auto text-xs text-txt3">
@@ -232,15 +257,38 @@ export function Models() {
       ) : matched === 0 ? (
         <Card><EmptyState title="无匹配模型" hint={view === 'used' && !query.trim() ? `最近 ${USAGE_DAYS} 天没有经代理的模型调用。` : `没有 id 包含「${query.trim()}」的模型。`} /></Card>
       ) : (
-        <div className="grid gap-4 xl:grid-cols-2">
-          {groups.map(g => (
-            <Card key={g.vendor}>
-              <CardHeader title={g.vendor} extra={<Badge kind="accent">{g.items.length} 个模型</Badge>} />
-              <CardBody className="space-y-1.5">
-                {g.items.map(m => <ModelRow key={m.id} m={m} u={usage.get(m.id)} />)}
-              </CardBody>
-            </Card>
-          ))}
+        <div className="grid gap-3 xl:grid-cols-2">
+          {groups.map(g => {
+            const open = expanded.has(g.vendor);
+            return (
+              <Card key={g.vendor} className={`overflow-hidden transition-all duration-200 ${open ? 'border-accent/30' : ''}`}>
+                {/* 厂商头:整条可点,展开/收起有旋转箭头与底色反馈;折叠时组头直接给该组参考成本 */}
+                <button onClick={() => toggleGroup(g.vendor)}
+                  className={`flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-all duration-150 active:scale-[0.995] ${
+                    open ? 'border-b border-line bg-panel2/40' : 'hover:bg-panel2/60'}`}>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-sm font-semibold text-txt">{g.vendor}</span>
+                    <Badge kind="accent">{g.items.length} 个模型</Badge>
+                    {g.cost > 0 && (
+                      <span className="tnum shrink-0 rounded border border-violet/25 bg-violet/10 px-1.5 py-0.5 text-[11px] font-semibold text-violet"
+                        title="该组近 30 天参考成本合计">
+                        {fmtUsd(g.cost)}
+                      </span>
+                    )}
+                  </span>
+                  <ChevronDown size={15} className={`shrink-0 text-txt3 transition-transform duration-300 ${open ? 'rotate-180 text-accent' : ''}`} />
+                </button>
+                {/* 高度动画折叠(grid-template-rows 0fr→1fr),内层 min-h-0 + overflow-hidden 才能真正收干 */}
+                <div className={`grid transition-all duration-300 ease-in-out ${open ? '[grid-template-rows:1fr]' : '[grid-template-rows:0fr]'}`}>
+                  <div className="min-h-0 overflow-hidden">
+                    <div className="space-y-1.5 p-4">
+                      {g.items.map(m => <ModelRow key={m.id} m={m} u={usage.get(m.id)} />)}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
         </div>
       )}
 

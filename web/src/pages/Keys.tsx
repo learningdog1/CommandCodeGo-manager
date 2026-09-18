@@ -66,7 +66,9 @@ function UpstreamPanel({ rows, clients, reload }: {
     setImporting(true);
     try {
       const r = await api<{ existing?: boolean; id: number; name?: string }>('/admin/api/cc-cli/import', { method: 'POST' });
-      toast('ok', r.existing ? `该 CLI 密钥已导入过(「${r.name ?? '已存在'}」)` : '已导入 CLI 登录密钥');
+      toast('ok', r.existing
+        ? `该 CLI 密钥已导入过(「${r.name ?? '已存在'}」)`
+        : `已导入账户「${r.name ?? 'CommandCode 账户'}」(名称取自 commandcode 账户名)`);
       await reload();
     } catch (err) {
       toast('err', `导入失败:${(err as Error).message}`);

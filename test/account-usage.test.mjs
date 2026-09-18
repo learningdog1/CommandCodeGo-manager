@@ -164,6 +164,20 @@ test('account-usage:服务启动即自动刷新(开机即有数据,无需打开�
   }
 });
 
+test('account-usage:存量默认名自动迁移为 commandcode 账户名,自定义名不动', async () => {
+  const s = await setup(usageUpstream());
+  try {
+    // 两条 key:一条旧默认名,一条用户自定义名
+    const legacy = await (await s.proxy.post('/admin/api/upstream-keys', { name: 'CommandCode CLI 登录', apiKey: 'user_legacy_name_001' })).json();
+    const custom = await (await s.proxy.post('/admin/api/upstream-keys', { name: '我的小号', apiKey: 'user_custom_name_002' })).json();
+    await s.proxy.post('/admin/api/account-usage/refresh', {});
+
+    const list = await (await s.proxy.get('/admin/api/upstream-keys')).json();
+    assert.equal(list.rows.find(r => r.id === legacy.id).name, 'testuser', '旧默认名在刷新拿到 whoami 后迁移为账户名');
+    assert.equal(list.rows.find(r => r.id === custom.id).name, '我的小号', '用户自定义名不被覆盖');
+  } finally { await s.close(); }
+});
+
 test('account-usage:上游全挂时行级 error,不影响其他账号', async () => {
   // onRequest 对计费端点一律 401
   const s = await setup({

@@ -61,6 +61,13 @@ export async function setUpstreamKeyStatus(id, status) {
   db.prepare('UPDATE upstream_keys SET status = ? WHERE id = ?').run(status, id);
 }
 
+/** 重命名上游 key(账户名自动迁移用:导入时未取到账户名的,拿到 whoami 后补齐)。 */
+export async function renameUpstreamKey(id, name) {
+  const db = getDb();
+  if (!db) { const k = memoryFallback.upstreamKeys.get(id); if (k) k.name = name; return; }
+  db.prepare('UPDATE upstream_keys SET name = ? WHERE id = ?').run(name, id);
+}
+
 /** 删除上游 key:有客户端 key 绑定时拒绝(显式绑定语义,静默级联会让客户端 key 失效)。 */
 export async function deleteUpstreamKey(id) {
   const db = getDb();

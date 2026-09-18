@@ -167,13 +167,23 @@ test('admin:models/refresh —— 无上游密钥时回落内置清单并说明�
   } finally { await s.close(); }
 });
 
-test('admin:cc-cli —— 检测 CLI 登录凭证并一键导入(掩码/查重/导入)', async () => {
+test('admin:cc-cli —— 检测 CLI 登录凭证并一键导入(掩码/查重/按账户名命名)', async () => {
   const fakeAuth = join('/tmp', `ccp-fake-auth-${process.pid}.json`);
   writeFileSync(fakeAuth, JSON.stringify({
     oauth: { access_token: 'irrelevant' },
     keys: { api: 'user_cli_login_abcd1234efgh5678' },
   }));
-  const s = await setup({ env: { CCP_CLI_AUTH_FILE: fakeAuth } });
+  // whoami 可用:导入后 key 名称应取 commandcode 账户名,而非默认名
+  const s = await setup({
+    env: { CCP_CLI_AUTH_FILE: fakeAuth },
+    onRequest: (req, res) => {
+      if (req.url.startsWith('/alpha/whoami')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, user: { id: 'u9', name: 'Cli User', email: 'cli@example.com', userName: 'cli_demo_user' }, org: null }));
+        return false;
+      }
+    },
+  });
   try {
     const det = await (await s.proxy.get('/admin/api/cc-cli')).json();
     assert.equal(det.installed, true);
@@ -183,9 +193,10 @@ test('admin:cc-cli —— 检测 CLI 登录凭证并一键导入(掩码/查重/�
     const imp = await fetch(s.proxy.base + '/admin/api/cc-cli/import', { method: 'POST' });
     assert.equal(imp.status, 201);
     const created = await imp.json();
+    assert.equal(created.name, 'cli_demo_user', '导入即按 commandcode 账户名命名');
     const list = await (await s.proxy.get('/admin/api/upstream-keys')).json();
     assert.equal(list.rows.length, 1);
-    assert.equal(list.rows[0].name, 'CommandCode CLI 登录');
+    assert.equal(list.rows[0].name, 'cli_demo_user');
 
     const imp2 = await fetch(s.proxy.base + '/admin/api/cc-cli/import', { method: 'POST' });
     assert.equal((await imp2.json()).existing, true);
