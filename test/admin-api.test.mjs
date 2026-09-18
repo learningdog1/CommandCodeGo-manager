@@ -261,3 +261,40 @@ test('admin:日志状态分组过滤(2xx/4xx/5xx)+ 分页 offset', async () => {
     assert.equal(page2.rows.length, 1, 'offset 分页');
   } finally { await s.close(); }
 });
+
+test('admin:upstream-keys/batch —— 批量粘贴导入(提取/去重/查重/按账户名命名)', async () => {
+  const NAMES = {
+    user_batch_alpha_0001: 'alpha_user',
+    user_batch_beta_0002: 'beta_user',
+  };
+  const s = await setup({
+    onRequest: (req, res) => {
+      if (req.url.startsWith('/alpha/whoami')) {
+        const un = NAMES[req.headers['authorization'].replace('Bearer ', '')] ?? 'fallback_user';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, user: { id: 'u', name: 'N', email: 'e@example.com', userName: un }, org: null }));
+        return false;
+      }
+    },
+  });
+  try {
+    // 预置一枚已存在的
+    await s.proxy.post('/admin/api/upstream-keys', { name: '已有账户', apiKey: 'user_batch_exists_001' });
+    const text = [
+      'user_batch_alpha_0001',
+      '这行没有密钥',
+      'user_batch_exists_001',   // 库里已存在 → 跳过
+      '前缀 user_batch_beta_0002 后缀',  // 混贴也能提取
+      'user_batch_beta_0002',    // 文本内重复 → 去重
+    ].join('\n');
+    const r = await (await s.proxy.post('/admin/api/upstream-keys/batch', { text })).json();
+    assert.equal(r.created.length, 2, '新建 2 枚(文本内重复去重)');
+    assert.deepEqual(r.created.map(c => c.name).sort(), ['alpha_user', 'beta_user'], '按 whoami 账户名命名');
+    assert.equal(r.existing.length, 1, '已存在跳过 1 枚');
+    assert.equal(r.unmatchedLines, 1, '无密钥的行计数');
+    const list = await (await s.proxy.get('/admin/api/upstream-keys')).json();
+    assert.equal(list.rows.length, 3, '库中共 3 枚(1 预置 + 2 新建)');
+
+    assert.equal((await s.proxy.post('/admin/api/upstream-keys/batch', { text: 'nothing here' })).status, 400, '无密钥 → 400');
+  } finally { await s.close(); }
+});

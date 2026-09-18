@@ -152,6 +152,9 @@ export const fetchOverview = () => api<Overview>('/admin/api/overview');
 export const fetchLogs = (qs = '') => api<{ rows: RequestRow[]; total: number }>(`/admin/api/logs${qs}`);
 export const fetchUsage = (qs = '') => api<{ rows: UsageRow[] }>(`/admin/api/usage${qs}`);
 export const fetchUpstreamKeys = () => api<{ rows: UpstreamKey[] }>('/admin/api/upstream-keys');
+export const batchImportUpstreamKeys = (text: string) =>
+  api<{ created: { id: number; name: string }[]; existing: { id: number; name: string }[]; unmatchedLines: number }>(
+    '/admin/api/upstream-keys/batch', { method: 'POST', body: { text } });
 export const fetchClientKeys = () => api<{ rows: ClientKey[] }>('/admin/api/client-keys');
 export const fetchSettings = () => api<Settings>('/admin/api/settings');
 export const putSettings = (patch: Partial<Settings>) =>

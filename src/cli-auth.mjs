@@ -15,6 +15,13 @@ export const cliAuthPath = () =>
 
 const USER_KEY_RE = /user_[a-zA-Z0-9_-]{8,}/g;
 
+/** 从任意文本提取全部 user_* 密钥(按出现顺序去重)。批量粘贴导入用。 */
+export function extractUserKeys(text) {
+  const out = new Set();
+  for (const m of String(text ?? '').matchAll(USER_KEY_RE)) out.add(m[0]);
+  return [...out];
+}
+
 /** 深度遍历 JSON 值,收集所有 user_* 形态的字符串。 */
 function collectKeys(value, out) {
   if (typeof value === 'string') {

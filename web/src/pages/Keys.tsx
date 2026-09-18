@@ -2,10 +2,10 @@
 // 覆盖 CRUD、探活、启停切换与创建结果的一次性 token 展示。
 import { useCallback, useEffect, useState } from 'react';
 import { Repeat, Terminal } from 'lucide-react';
-import { api, fetchClientKeys, fetchUpstreamKeys, type ClientKey, type UpstreamKey } from '../api';
+import { api, batchImportUpstreamKeys, fetchClientKeys, fetchUpstreamKeys, type ClientKey, type UpstreamKey } from '../api';
 import {
   Badge, Button, Card, CardHeader, Dialog, EmptyState, Field, Input, Loading, Select,
-  Table, Tabs, Td, Th, toast, fmtAgo, fmtTime,
+  Table, Tabs, Td, Th, inputCls, toast, fmtAgo, fmtTime,
 } from '../ui';
 
 // 与后端同款校验:/^user_[a-zA-Z0-9_-]+$/
@@ -44,6 +44,10 @@ function UpstreamPanel({ rows, clients, reload }: {
   rows: UpstreamKey[] | null; clients: ClientKey[] | null; reload: () => Promise<void>;
 }) {
   const [addOpen, setAddOpen] = useState(false);
+  // 批量导入(多账户免 CLI 退出重登:Studio 复制密钥,一行一个粘贴)
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchText, setBatchText] = useState('');
+  const [batchBusy, setBatchBusy] = useState(false);
   const [name, setName] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
@@ -80,6 +84,25 @@ function UpstreamPanel({ rows, clients, reload }: {
   const keyValid = USER_KEY_RE.test(apiKey.trim());
 
   const openAdd = () => { setName(''); setApiKey(''); setAddOpen(true); };
+
+  const submitBatch = async () => {
+    if (!batchText.trim() || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const r = await batchImportUpstreamKeys(batchText);
+      const names = r.created.map(c => c.name).join('、');
+      toast('ok', `批量导入完成:新建 ${r.created.length} 个账户${names ? `(${names})` : ''}`
+        + (r.existing.length ? `,已存在跳过 ${r.existing.length} 个` : '')
+        + (r.unmatchedLines > 0 ? `,${r.unmatchedLines} 行未识别已忽略` : ''));
+      setBatchOpen(false);
+      setBatchText('');
+      await reload();
+    } catch (err) {
+      toast('err', `批量导入失败:${(err as Error).message}`);
+    } finally {
+      setBatchBusy(false);
+    }
+  };
 
   const submitAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -157,7 +180,8 @@ function UpstreamPanel({ rows, clients, reload }: {
             <Repeat size={15} className="text-accent" />多账户与额度轮转
           </div>
           <div className="min-w-56 flex-1">
-            <span className="text-txt">加账户:</span>commandcode CLI 里 <code className="tnum rounded bg-panel2 px-1">cmd login</code> 切换账号后,再点上方「一键导入」;或网页后台生成密钥手动添加
+            <span className="text-txt">加账户:</span>点「批量导入」,把各账号的 user_* 密钥一行一个粘贴进来
+            (网页后台 → API keys 复制,名称自动取账户名);也可用 CLI 登录后「一键导入」
           </div>
           <div className="min-w-56 flex-1">
             <span className="text-txt">自动轮转:</span>harness 用客户端密钥(sk-ccp-*)接入时,绑定账户额度耗尽(402)自动切换其他启用账户并当场重试;耗尽的标记为黄色,额度重置后点「重新启用」
@@ -179,7 +203,7 @@ function UpstreamPanel({ rows, clients, reload }: {
             <span className="font-medium text-txt">检测到 Command Code CLI 登录</span>
             <span className="tnum ml-2 text-xs text-txt2">{cli.keyMask}</span>
             <div className="mt-0.5 text-xs text-txt2">
-              点击导入当前 CLI 登录的账户;在 CLI 中 <code className="tnum rounded bg-panel2 px-1">cmd login</code> 切换其他账号后回到这里,可再次导入(多账户叠加)
+              导入当前 CLI 登录的账户;要叠加多个账号,用「批量导入」粘贴各账号密钥即可,无需在 CLI 里退出重登
             </div>
           </div>
           <Button variant="primary" loading={importing} onClick={() => void importCli()}>一键导入</Button>
@@ -188,7 +212,10 @@ function UpstreamPanel({ rows, clients, reload }: {
 
       <Card>
         <CardHeader title="上游密钥" extra={
-          <Button size="sm" variant="primary" onClick={openAdd}>添加上游密钥</Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => setBatchOpen(true)}>批量导入</Button>
+            <Button size="sm" variant="primary" onClick={openAdd}>添加上游密钥</Button>
+          </div>
         } />
         {!rows ? (
           <Loading>加载上游密钥…</Loading>
@@ -232,6 +259,30 @@ function UpstreamPanel({ rows, clients, reload }: {
           </Table>
         )}
       </Card>
+
+      {/* 批量导入:多账户一次粘贴,免 CLI 退出重登 */}
+      <Dialog open={batchOpen} title="批量导入账户" width="max-w-lg" onClose={() => setBatchOpen(false)}>
+        <div className="space-y-3">
+          <Field label="密钥列表" hint="一行一枚 user_* 密钥;名称自动取 commandcode 账户名,重复的自动跳过">
+            <textarea
+              value={batchText}
+              onChange={e => setBatchText(e.target.value)}
+              placeholder={'user_aaaaaaaaaaaaaaaaaaaa\nuser_bbbbbbbbbbbbbbbbbbbb\nuser_ccccccccccccccccccc'}
+              rows={7} autoFocus spellCheck={false}
+              className={`${inputCls} h-36 font-mono text-xs`} />
+          </Field>
+          <div className="rounded-lg border border-line bg-panel2 px-3 py-2 text-xs leading-relaxed text-txt3">
+            多账户推荐路径:在 <span className="text-txt2">commandcode.ai 网页后台 → API keys</span> 为每个账号生成 / 复制密钥,
+            回到这里一行一个粘贴 —— 无需在 CLI 里退出再登录。也可混贴整段文本,系统会自动提取所有 user_* 密钥。
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setBatchOpen(false)}>取消</Button>
+            <Button variant="primary" loading={batchBusy} disabled={!batchText.trim()} onClick={() => void submitBatch()}>
+              导入
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       {/* 添加上游密钥 */}
       <Dialog open={addOpen} title="添加上游密钥" onClose={() => setAddOpen(false)}>

@@ -16,7 +16,7 @@ import {
   getUpstreamKeyById, listClientKeys, createClientKey, setClientKeyStatus, deleteClientKey,
   findUpstreamKeyByApiKey, maskKey,
 } from '../store/keys.mjs';
-import { detectCliAuth } from '../cli-auth.mjs';
+import { detectCliAuth, extractUserKeys } from '../cli-auth.mjs';
 import { listRequests, summarizeSince } from '../store/requests.mjs';
 import { usageSummary } from '../store/usage.mjs';
 import { driftStatus } from '../protocol/upstream.mjs';
@@ -216,6 +216,36 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
       }
       const created = await createUpstreamKey({ name: String(body.name), apiKey: String(body.apiKey) });
       return end(res, 201, created);
+    }
+    // ── 批量导入:粘贴多行 user_* 密钥一次建档(免 CLI 退出重登)──
+    // 每枚建档后即拉账户信息按 commandcode 账户名命名;重复的跳过并回告。
+    if (req.method === 'POST' && path === '/upstream-keys/batch') {
+      const body = await readBody(req).catch(() => null);
+      const text = String(body?.text ?? '');
+      const keys = extractUserKeys(text);
+      if (keys.length === 0) return end(res, 400, { error: '未在文本中找到 user_* 密钥' });
+      if (keys.length > 50) return end(res, 400, { error: '单次最多导入 50 枚密钥' });
+      const nonEmpty = text.split('\n').map(l => l.trim()).filter(Boolean);
+      const created = [], existing = [];
+      for (let i = 0; i < keys.length; i += 3) {
+        await Promise.all(keys.slice(i, i + 3).map(async k => {
+          const dup = await findUpstreamKeyByApiKey(k);
+          if (dup) { existing.push({ id: dup.id, name: dup.name }); return; }
+          const c = await createUpstreamKey({ name: 'CommandCode 账户', apiKey: k });
+          let name = c.name;
+          try {
+            const r = await refreshAccountUsage(c.id);
+            if (r.rows?.[0]?.name) name = r.rows[0].name;
+          } catch { /* 命名失败不影响导入,刷新时会再迁移 */ }
+          created.push({ id: c.id, name });
+        }));
+      }
+      created.sort((a, b) => a.id - b.id);
+      return end(res, 200, {
+        created, existing,
+        // 未识别行 = 完全不含 user_* 密钥的非空行(混贴了密钥的行不算)
+        unmatchedLines: nonEmpty.filter(l => extractUserKeys(l).length === 0).length,
+      });
     }
     {
       const m = path.match(/^\/upstream-keys\/(\d+)$/);
