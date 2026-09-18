@@ -14,6 +14,7 @@ import { startMockUpstream, startProxy } from './helpers.mjs';
 process.env.CCP_DATA_DIR = mkdtempSync(join(tmpdir(), 'ccp-win-'));
 process.on('exit', () => { try { rmSync(process.env.CCP_DATA_DIR, { recursive: true, force: true }); } catch {} });
 const { SCHEMA } = await import('../src/store/db.mjs');
+const windowStateModule = await import('../src/protocol/window-state.mjs');
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 const KEY_A = 'user_win_a_hitlimit1';
@@ -180,4 +181,28 @@ test('window-rotation:瞬态 429(无 USAGE_EXCEEDED/无 window)不轮转', async
     await mock2.close();
     rmSync(wd, { recursive: true, force: true });
   }
+});
+
+test('窗口标记覆盖语义:live 不缩短更长 resetAt;manual 不被运行时标记覆盖(纯单元)', () => {
+  const { markWindowBlocked, isWindowBlocked, getWindowState, resetWindowBlocks } =
+    windowStateModule;
+  resetWindowBlocks();
+  const keyId = 990001;
+  const later = Date.now() + 2 * 3600_000;
+
+  // usage 同步写下的 weekly 到 +2h
+  markWindowBlocked(keyId, { source: 'usage', window: 'weekly', until: later });
+  // live 429 的 10min 探针 TTL 不得把它覆盖掉(否则窗口标记提前放行)
+  markWindowBlocked(keyId, { source: 'live', window: 'weekly', until: Date.now() + 10 * 60_000 });
+  assert.equal(isWindowBlocked(keyId), true);
+  assert.equal(getWindowState(keyId).source, 'usage');
+  assert.ok(Math.abs((getWindowState(keyId).until ?? 0) - later) < 1000, 'until 保持更晚者');
+
+  // manual 生效且不被 live/usage 覆盖(只能经 setManualSwitch(false) 解除)
+  markWindowBlocked(keyId, { source: 'manual', window: 'manual', until: Date.now() + 3600_000 });
+  assert.equal(getWindowState(keyId).source, 'manual');
+  markWindowBlocked(keyId, { source: 'live', window: 'fiveHour', until: later });
+  assert.equal(getWindowState(keyId).source, 'manual');
+
+  resetWindowBlocks();
 });

@@ -23,10 +23,23 @@ export function isWindowBlocked(keyId) {
   return prune(keyId) !== null;
 }
 
-/** 打标记(live/usage 同窗口互相覆盖取更晚者;manual 独立叠加,清除只由 manual 路径做)。 */
+/**
+ * 打标记。覆盖规则(同一 key 只存一条,manual 与 live/usage 两类互不侵犯):
+ *   - 已有 manual,来 live/usage → 不动(manual 只经 setManualSwitch(off) 或到期解除);
+ *   - 已有 manual,来 manual → 取更晚 until(不缩短既有屏蔽);
+ *   - 已有 live/usage,来 manual → 覆盖(手动切换优先于运行时推断);
+ *   - 已有 live/usage,来 live/usage → 保留 until 更晚者 —— live 的 10min 探针 TTL
+ *     不得覆盖 usage 同步写下的更长 resetAt,否则窗口标记会提前放行。
+ */
 export function markWindowBlocked(keyId, { source, window, until }) {
   if (keyId == null) return;
-  blocks.set(keyId, { source, window, until: until || 0, at: Date.now() });
+  const cur = blocks.get(keyId);
+  const next = { source, window, until: until || 0, at: Date.now() };
+  if (cur) {
+    if (cur.source === 'manual' && source !== 'manual') return;
+    if (cur.source !== 'manual' && source !== 'manual' && (cur.until || 0) >= (next.until || 0)) return;
+  }
+  blocks.set(keyId, next);
 }
 
 /** 面板用的状态摘要(blocked/source/window/until;manual 与 live 并存时以 manual 为准展示)。 */
@@ -53,10 +66,8 @@ export function syncFromWindowLimits(keyId, windowLimits) {
     const w = windowLimits?.[name];
     if (hit(w)) {
       const until = w.resetAt > Date.now() ? w.resetAt : Date.now() + 10 * 60_000; // resetAt 缺失时给探针 TTL
-      const cur = blocks.get(keyId);
-      if (!cur || cur.source !== 'manual' || (cur.until || 0) < until) {
-        markWindowBlocked(keyId, { source: 'usage', window: name, until });
-      }
+      // 覆盖规则集中在 markWindowBlocked(manual 不被覆盖、live/usage 取更晚者)
+      markWindowBlocked(keyId, { source: 'usage', window: name, until });
     } else if (w && blocks.get(keyId)?.source !== 'manual') {
       // 窗口有数据且未到顶:清除 live/usage 标记(该窗口已恢复)
       const b = blocks.get(keyId);
@@ -78,7 +89,9 @@ export function setManualSwitch(keyId, on, maxUntil = 0) {
     if (b?.source === 'manual') blocks.delete(keyId);
     return;
   }
-  const until = Math.max(Date.now() + 60 * 60_000, maxUntil || 0);
+  // 不缩短既有屏蔽(如 usage 已标到 3 天后的 weekly reset);手动恢复只走 on=false
+  const cur = blocks.get(keyId);
+  const until = Math.max(Date.now() + 60 * 60_000, maxUntil || 0, cur?.until || 0);
   markWindowBlocked(keyId, { source: 'manual', window: 'manual', until });
   log('info', 'Account manually switched away (window block)', { upstreamKeyId: keyId, until: new Date(until).toISOString() });
 }
