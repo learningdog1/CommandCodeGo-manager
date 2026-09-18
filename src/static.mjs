@@ -40,24 +40,50 @@ function sendFile(res, filePath, status = 200) {
       ? 'no-cache'
       : immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
   });
-  createReadStream(filePath).pipe(res);
+  // ReadStream 的 error 必须有人接:否则 stat 与 open 之间文件被删、或目录回落出
+  // 竞态时,ENOENT 的 error 事件无人监听会把整个进程带崩(实测 GET /assets/ 即崩)。
+  const stream = createReadStream(filePath);
+  stream.on('error', (err) => {
+    if (res.writableEnded || res.destroyed) return;
+    if (!res.headersSent) {
+      res.writeHead(err.code === 'ENOENT' ? 404 : 500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(err.code === 'ENOENT' ? 'Not found' : 'Read error');
+    } else {
+      try { res.end(); } catch {} // 头已发出,只能掐断连接
+    }
+  });
+  // 客户端中途断开时销毁读流:pipe 不会替我们停掉 source,否则文件会被完整读进无人的 socket
+  res.on('close', () => { if (!stream.destroyed) stream.destroy(); });
+  stream.pipe(res);
 }
 
 /** 返回 true 表示已处理(命中静态文件或 SPA fallback)。 */
 export async function serveStatic(req, res, url) {
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
 
+  // 畸形百分号编码('/%'、'/a%zz')会让 decodeURIComponent 抛 URIError;
+  // 按静态未命中处理走上层 404,而不是 500
+  let decoded;
+  try { decoded = decodeURIComponent(url.pathname); } catch { return false; }
   // 防目录穿越:规范化后必须仍在 public/ 内
-  const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+  const rel = decoded.replace(/^\/+/, '');
   const target = normalize(join(PUBLIC_DIR, rel));
   if (!target.startsWith(PUBLIC_DIR)) return false;
 
-  let filePath = target;
-  try {
-    const st = statSync(filePath);
-    if (st.isDirectory()) filePath = join(filePath, 'index.html');
-  } catch {
-    // 不存在的文件:SPA fallback 到 index.html(前端路由),但资源型后缀不回退
+  // 直达文件存在则用它;目录回落 index.html 后必须**再验一次存在性**:
+  // public/assets/ 这类目录没有 index.html,不验就交给 createReadStream 会在
+  // 异步 open 时炸出无人处理的 ENOENT —— 单个 GET 就能打崩整个进程。
+  const resolveFile = () => {
+    let filePath = target;
+    let st = null;
+    try { st = statSync(filePath); } catch {}
+    if (st?.isDirectory()) filePath = join(filePath, 'index.html');
+    try { statSync(filePath); return filePath; } catch { return null; }
+  };
+  let filePath = resolveFile();
+  if (!filePath) {
+    // 不存在的文件(含无 index.html 的目录):SPA fallback 到 index.html(前端路由),
+    // 但资源型后缀不回退
     if (/\.[a-z0-9]+$/i.test(rel)) return false;
     filePath = join(PUBLIC_DIR, 'index.html');
     try { statSync(filePath); } catch { return false; } // UI 未构建

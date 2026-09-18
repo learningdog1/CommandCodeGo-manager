@@ -35,6 +35,20 @@ test('static:GET / 返回 index.html;未知路径 SPA fallback;资源型 404 不
     // 目录穿越被拒
     const evil = await proxy.get('/..%2f..%2fconfig.json');
     assert.notEqual(evil.status, 200);
+
+    // 回归:目录存在但目录下没有 index.html 时,不得把不存在的路径交给
+    // createReadStream —— ReadStream 的 ENOENT error 无人处理,曾把整个进程
+    // 打崩(GET /assets/ 即可反复杀死服务);现在按 SPA fallback 回 index.html
+    const dir = await proxy.get('/assets/');
+    assert.equal(dir.status, 200);
+    assert.match(await dir.text(), /ccp-ui/);
+    // 上述请求后进程必须仍活着(崩溃路径的直接断言)
+    assert.equal((await proxy.get('/health')).status, 200);
+
+    // 回归:畸形百分号编码('/%'、'/a%zz')不得让 decodeURIComponent 抛
+    // URIError 变成 500;按静态未命中走 404
+    assert.notEqual((await proxy.get('/%')).status, 500);
+    assert.notEqual((await proxy.get('/a%zz')).status, 500);
   } finally {
     await proxy.kill();
     await mock.close();

@@ -85,7 +85,13 @@ const server = http.createServer(async (req, res) => {
       if (!handled) sendJSON(res, 404, { error: { message: 'Not found', type: 'not_found' } });
     }
   } catch (e) {
-    sendJSON(res, 500, { error: { message: e.message, type: 'internal_error' } });
+    // 未预期异常必须留痕(此前静默返回 500,线上排障看不到任何线索)
+    log('error', 'Unhandled request error', { path: url.pathname, message: e.message, stack: e.stack?.split('\n')[1] });
+    if (!res.headersSent) {
+      sendJSON(res, 500, { error: { message: e.message, type: 'internal_error' } });
+    } else {
+      try { res.end(); } catch {} // 头已发出(如流式中途抛错),只能掐断连接
+    }
   }
 });
 

@@ -10,7 +10,11 @@ if (major < 22 || (major === 22 && minor < 5)) {
   console.error(`[commandcodego-manager] 需要 Node >= 22.5(当前 ${process.versions.node})。`);
   process.exit(1);
 }
-// node:sqlite 在 22.x 每次触发 ExperimentalWarning;空监听器将其静默
-process.on('warning', () => {});
+// node:sqlite 在 22.x 每次触发 ExperimentalWarning;只静默这一种,
+// 其余警告(MaxListenersExceeded、未来的弃用警告等)照常打到 stderr,不被误吞
+process.on('warning', (w) => {
+  if (w?.name === 'ExperimentalWarning' && /sqlite/i.test(String(w?.message))) return;
+  console.error(`(node:${process.pid}) ${w?.stack ?? String(w)}`);
+});
 
 await import('./src/routes/server.mjs');
