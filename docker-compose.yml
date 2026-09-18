@@ -1,7 +1,7 @@
 services:
   ccp:
     build: .
-    # 走镜像仓库时替换为 image: ghcr.io/<user>/commandcodego-manager:latest
+    # 走镜像仓库时替换为 image: ghcr.io/learningdog1/commandcodego-manager:latest
     container_name: commandcodego
     restart: unless-stopped
     ports:

@@ -168,8 +168,8 @@ node dist/commandcodego-manager.mjs   # data/ 与 public/ 取脚本同级目录
 运行层零 npm 依赖,基于 `node:22-alpine`)。服务器上:
 
 ```bash
-git clone https://github.com/<你的仓库地址>.git
-cd commandcode-proxy
+git clone https://github.com/learningdog1/CommandCodeGo-manager.git
+cd CommandCodeGo-manager
 docker compose up -d --build      # 构建约 1-3 分钟;小内存机器见下方说明
 docker compose logs -f            # 确认启动
 ```
