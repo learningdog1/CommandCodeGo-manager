@@ -1,0 +1,13 @@
+.git
+.github
+node_modules
+web/node_modules
+desktop
+release
+data
+dist
+docs
+test
+*.log
+.DS_Store
+docker-compose.yml

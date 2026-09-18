@@ -1,0 +1,12 @@
+services:
+  ccp:
+    build: .
+    # 走镜像仓库时替换为 image: ghcr.io/<user>/commandcodego-manager:latest
+    container_name: commandcodego
+    restart: unless-stopped
+    ports:
+      # 只绑服务器本地,由 Nginx/Caddy 反代对外;纯内网直用可改为 "3050:3050"
+      - "127.0.0.1:3050:3050"
+    volumes:
+      # SQLite 库 + config.json 全在数据目录,升级重建容器不丢数据
+      - ./data:/app/data

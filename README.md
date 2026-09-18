@@ -16,6 +16,30 @@ Command Code 订阅反向代理:把 [Command Code](https://commandcode.ai)(含 $
 
 ![总览仪表盘](docs/screenshots/dashboard.png)
 
+## 目录
+
+- [特性](#特性)
+- [管理界面一览](#管理界面一览)
+- [账号用量面板](#账号用量面板)
+- [模型价目与花销](#模型价目与花销)
+- [设备指纹(可视化查验)](#设备指纹可视化查验)
+- [快速开始](#快速开始)
+  - [方式〇:桌面版(macOS / Windows,推荐)](#方式〇桌面版macos--windows推荐)
+  - [方式一:裸 Node(要求 Node ≥ 22.5)](#方式一裸-node要求-node--225)
+  - [方式二:单文件 bundle](#方式二单文件-bundle)
+  - [方式三:Docker(服务器部署)](#方式三docker服务器部署)
+  - [开发模式](#开发模式)
+- [接入 harness](#接入-harness)
+  - [cURL](#curl)
+  - [OpenAI SDK / 任意 OpenAI 兼容客户端](#openai-sdk--任意-openai-兼容客户端)
+  - [Claude Code(Anthropic 协议)](#claude-codeanthropic-协议)
+  - [ZCode / OpenCode 等](#zcode--opencode-等)
+- [配置](#配置)
+  - [运行时旋钮(仅环境变量)](#运行时旋钮仅环境变量)
+- [安全须知](#安全须知)
+- [内存与部署(公网必读)](#内存与部署公网必读)
+- [许可](#许可)
+
 ## 特性
 
 - OpenAI Chat Completions + Responses + Anthropic Messages 三端点,流式(SSE)与非流式
@@ -137,6 +161,29 @@ npm install                # 安装 esbuild(devDependency)
 npm run bundle             # 产出 dist/commandcodego-manager.mjs + dist/public/
 node dist/commandcodego-manager.mjs   # data/ 与 public/ 取脚本同级目录
 ```
+
+### 方式三:Docker(服务器部署)
+
+仓库自带 `Dockerfile` / `docker-compose.yml` / `.dockerignore`,多阶段构建(镜像内编译前端,
+运行层零 npm 依赖,基于 `node:22-alpine`)。服务器上:
+
+```bash
+git clone https://github.com/<你的仓库地址>.git
+cd commandcode-proxy
+docker compose up -d --build      # 构建约 1-3 分钟;小内存机器见下方说明
+docker compose logs -f            # 确认启动
+```
+
+- 容器内已设 `HOST=0.0.0.0 PORT=3050 CCP_DATA_DIR=/app/data`;compose 把端口绑在
+  `127.0.0.1:3050`,数据落宿主机 `./data/`(SQLite 库 + config.json),升级重建不丢。
+- 首次配置:浏览器打开管理界面配置,或直接编辑宿主机 `./data/config.json` 后
+  `docker compose restart`(环境变量覆写的 HOST/PORT 不会回写进文件)。
+- 公网部署置于反代之后(TLS + 访问控制,见「安全须知」)。反代三个要点:
+  `proxy_set_header Host $host`(管理写操作的同源 Origin 校验依赖它)、
+  `proxy_buffering off`(`/v1` SSE 流式)、`keepalive_timeout` ≤ 60s(见下节)。
+- 升级:`git pull && docker compose up -d --build`;备份:拷走 `./data/` 即可。
+- **内存 ≤ 1GB 的服务器**:前端构建(vite + echarts)可能 OOM。改为本机或 CI 构建镜像推到
+  GHCR 等仓库,服务器 compose 里用 `image:` 替代 `build:`,只 `docker compose pull`。
 
 ### 开发模式
 
