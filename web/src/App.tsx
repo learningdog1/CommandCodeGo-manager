@@ -8,6 +8,7 @@ import { Dashboard } from './pages/Dashboard';
 
 const Logs = lazy(() => import('./pages/Logs').then(m => ({ default: m.Logs })));
 const Usage = lazy(() => import('./pages/Usage').then(m => ({ default: m.Usage })));
+const AccountUsage = lazy(() => import('./pages/AccountUsage').then(m => ({ default: m.AccountUsage })));
 const Models = lazy(() => import('./pages/Models').then(m => ({ default: m.Models })));
 const Keys = lazy(() => import('./pages/Keys').then(m => ({ default: m.Keys })));
 const Fingerprint = lazy(() => import('./pages/Fingerprint').then(m => ({ default: m.Fingerprint })));
@@ -21,6 +22,7 @@ export function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/logs" element={<Suspense fallback={<Loading />}><Logs /></Suspense>} />
           <Route path="/usage" element={<Suspense fallback={<Loading />}><Usage /></Suspense>} />
+          <Route path="/accounts" element={<Suspense fallback={<Loading />}><AccountUsage /></Suspense>} />
           <Route path="/models" element={<Suspense fallback={<Loading />}><Models /></Suspense>} />
           <Route path="/keys" element={<Suspense fallback={<Loading />}><Keys /></Suspense>} />
           <Route path="/fingerprints" element={<Suspense fallback={<Loading />}><Fingerprint /></Suspense>} />

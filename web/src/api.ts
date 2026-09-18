@@ -70,7 +70,7 @@ export interface UsageRow {
 export interface Settings {
   port?: number; host?: string; apiBase?: string; projectSlug?: string;
   logFile?: string; logLevel?: string; zdr?: boolean; useProviderModels?: boolean;
-  modelRefreshIntervalMs?: number; allowDirectUpstreamKey?: boolean; logRetentionDays?: number;
+  modelRefreshIntervalMs?: number; accountUsageRefreshMs?: number; allowDirectUpstreamKey?: boolean; logRetentionDays?: number;
   emptySystemPlaceholder?: boolean; dataDir?: string;
 }
 
@@ -109,6 +109,40 @@ export interface FingerprintsInfo {
   };
   keys: FingerprintKeyRow[];
 }
+
+// ── 账号用量(/alpha/billing + /alpha/usage 的管理侧投影) ──
+export interface WindowLimit {
+  used: number; cap: number; exceeded: boolean; resetAt: number;
+}
+export interface AccountUsageData {
+  whoami: { userName: string | null; email: string | null; orgId: string | null };
+  plan: {
+    id: string | null; name: string | null; status: string | null; cancelAtPeriodEnd: boolean;
+    currentPeriodStart: string | null; currentPeriodEnd: string | null;
+    daysRemaining: number | null; monthlyTotal: number | null;
+  } | null;
+  credits: {
+    monthly: number; purchased: number; free: number; totalRemaining: number; belowThreshold: boolean;
+    monthlyTotal: number | null; monthlyUsed: number | null;
+  } | null;
+  windowLimits: { limited: boolean; exceeded: boolean | null; fiveHour: WindowLimit | null; weekly: WindowLimit | null } | null;
+  period: {
+    totalCount: number; completedCount: number; failedCount: number; successRate: number;
+    totalCost: number; averageCost: number;
+    totalTokensIn: number; totalTokensOut: number; totalTokens: number;
+    totalCredits: number; totalMonthlyCredits: number; totalPurchasedCredits: number; totalFreeCredits: number;
+    periodBasis: string | null;
+  } | null;
+}
+export interface AccountUsageRow {
+  id: number; name: string; status: string;
+  fetchedAt: number | null; error: string | null; data: AccountUsageData | null;
+}
+
+export const fetchAccountUsage = () => api<{ rows: AccountUsageRow[] }>('/admin/api/account-usage');
+export const refreshAccountUsage = (id?: number) =>
+  api<{ rows: AccountUsageRow[]; refreshed: number; failed: number }>('/admin/api/account-usage/refresh',
+    { method: 'POST', body: id !== undefined ? { id } : {} });
 
 export const fetchOverview = () => api<Overview>('/admin/api/overview');
 export const fetchLogs = (qs = '') => api<{ rows: RequestRow[]; total: number }>(`/admin/api/logs${qs}`);

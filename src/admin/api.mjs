@@ -21,6 +21,7 @@ import { listRequests, summarizeSince } from '../store/requests.mjs';
 import { usageSummary } from '../store/usage.mjs';
 import { driftStatus } from '../protocol/upstream.mjs';
 import { keyStateStore } from '../protocol/keystate.mjs';
+import { accountUsageSnapshot, refreshAccountUsage } from '../protocol/account-usage.mjs';
 import { DEVICE_PROFILE, slugifyProjectPath } from '../protocol/fingerprint.mjs';
 import { MODELS } from '../protocol/models.mjs';
 
@@ -113,6 +114,18 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
         groupBy: url.searchParams.get('groupBy') ?? 'day',
       });
       return end(res, 200, { rows });
+    }
+
+    // ── 账号用量(快照纯读内存缓存;仅显式刷新触达上游,见下) ──
+    if (req.method === 'GET' && path === '/account-usage') {
+      return end(res, 200, await accountUsageSnapshot());
+    }
+    if (req.method === 'POST' && path === '/account-usage/refresh') {
+      const body = await readBody(req).catch(() => null);
+      const id = Number(body?.id);
+      const r = await refreshAccountUsage(Number.isInteger(id) && id > 0 ? id : null);
+      if (r.notFound) return end(res, 404, { error: 'upstream key not found or disabled' });
+      return end(res, 200, r);
     }
 
     // ── 设备指纹(只读:证明「模拟了什么、上报结果如何」) ──

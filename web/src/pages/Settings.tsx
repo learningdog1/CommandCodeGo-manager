@@ -19,6 +19,7 @@ const ENV_KNOBS = [
 interface FormState {
   port: string; host: string; apiBase: string; projectSlug: string;
   zdr: boolean; useProviderModels: boolean; modelRefreshIntervalMs: string;
+  accountUsageRefreshMs: string;
   logLevel: string; logFile: string; logRetentionDays: string;
   allowDirectUpstreamKey: boolean;
 }
@@ -78,6 +79,7 @@ export function Settings() {
           zdr: !!s.zdr,
           useProviderModels: !!s.useProviderModels,
           modelRefreshIntervalMs: s.modelRefreshIntervalMs != null ? String(s.modelRefreshIntervalMs) : '',
+          accountUsageRefreshMs: s.accountUsageRefreshMs != null ? String(s.accountUsageRefreshMs) : '',
           logLevel: LOG_LEVELS.includes(s.logLevel ?? '') ? (s.logLevel as string) : 'info',
           logFile: s.logFile ?? '',
           logRetentionDays: s.logRetentionDays != null ? String(s.logRetentionDays) : '',
@@ -106,6 +108,9 @@ export function Settings() {
     if (!/^\d+$/.test(form.modelRefreshIntervalMs.trim()) || Number(form.modelRefreshIntervalMs) < 1) {
       e.modelRefreshIntervalMs = '需为 ≥1 的整数(毫秒)';
     }
+    if (!/^\d+$/.test(form.accountUsageRefreshMs.trim())) {
+      e.accountUsageRefreshMs = '需为 ≥0 的整数(毫秒),0 = 关闭';
+    }
     if (!/^\d+$/.test(form.logRetentionDays.trim()) || Number(form.logRetentionDays) < 1) {
       e.logRetentionDays = '需为 ≥1 的整数(天)';
     }
@@ -123,6 +128,7 @@ export function Settings() {
         zdr: form.zdr,
         useProviderModels: form.useProviderModels,
         modelRefreshIntervalMs: Number(form.modelRefreshIntervalMs.trim()),
+        accountUsageRefreshMs: Number(form.accountUsageRefreshMs.trim()),
         logLevel: form.logLevel,
         logRetentionDays: Number(form.logRetentionDays.trim()),
         allowDirectUpstreamKey: form.allowDirectUpstreamKey,
@@ -195,6 +201,11 @@ export function Settings() {
                 <Input type="number" inputMode="numeric" value={form.modelRefreshIntervalMs}
                   onChange={e => set('modelRefreshIntervalMs', e.target.value)} className="tnum" />
                 {fieldErr('modelRefreshIntervalMs')}
+              </Field>
+              <Field label="账号用量刷新间隔(毫秒)" hint="账号面板自动刷新;0 = 关闭,保存后即时生效">
+                <Input type="number" inputMode="numeric" value={form.accountUsageRefreshMs}
+                  onChange={e => set('accountUsageRefreshMs', e.target.value)} className="tnum" />
+                {fieldErr('accountUsageRefreshMs')}
               </Field>
             </div>
             <ToggleRow title="零数据保留(ZDR)" hint="开启后上游不保留请求数据"

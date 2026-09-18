@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useOutlet } from 'react-router-dom';
 import {
-  Terminal, LayoutDashboard, ScrollText, BarChart3, Boxes, KeyRound, Fingerprint, Settings,
+  Terminal, LayoutDashboard, ScrollText, BarChart3, Boxes, KeyRound, Fingerprint, Settings, Users,
 } from 'lucide-react';
 import { fetchOverview, type Overview } from '../api';
 import { ThemeToggle, toast } from '../ui';
@@ -16,6 +16,7 @@ const NAV_GROUPS: { title: string; items: { to: string; label: string; icon: typ
       { to: '/', label: '总览', icon: LayoutDashboard, end: true },
       { to: '/logs', label: '请求日志', icon: ScrollText, end: false },
       { to: '/usage', label: '用量统计', icon: BarChart3, end: false },
+      { to: '/accounts', label: '账号用量', icon: Users, end: false },
     ],
   },
   {
@@ -34,6 +35,7 @@ const PAGE_META: { match: string; title: string; desc: string }[] = [
   { match: '/', title: '总览', desc: '订阅用量与代理运行状态一览' },
   { match: '/logs', title: '请求日志', desc: '实时请求流与历史查询' },
   { match: '/usage', title: '用量统计', desc: '按天 / 模型 / 密钥的 token 消耗' },
+  { match: '/accounts', title: '账号用量', desc: '每个账号的模板条窗口、信用余额与期账累计' },
   { match: '/models', title: '模型', desc: '可用模型目录与套餐标注' },
   { match: '/keys', title: '密钥管理', desc: '上游订阅账户与客户端接入密钥' },
   { match: '/fingerprints', title: '设备指纹', desc: '每个上游密钥伪造的设备身份与上报状态' },
