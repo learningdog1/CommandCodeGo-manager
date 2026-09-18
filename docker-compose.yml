@@ -18,9 +18,15 @@ services:
     volumes:
       # SQLite 库 + config.json 全在数据目录,升级重建容器不丢数据
       - ./data:/app/data
-      # 「一键导入」可选:CLI 登录凭证只读挂载进容器。检测读的是容器内文件系统的
-      # /root/.commandcode/auth.json,宿主机上 cmd login 的凭证默认看不见——
-      # root 用户在宿主机登录过 CLI 后,取消下面这行注释并 docker compose up -d 即可;
-      # 非 root 用户改为 ~/.commandcode:/cc-auth:ro 并在 environment 加
-      # CCP_CLI_AUTH_FILE=/cc-auth/auth.json。不挂载就走「批量导入」粘贴 user_* 密钥
+      # ── 可选:开启「一键导入」按钮(不挂载也能正常用,见文末替代方案)──
+      # 前提:已在这台服务器上安装 commandcode CLI 并完成 cmd login,凭证写在
+      #       宿主机 /root/.commandcode/auth.json(root 用户)。服务器上如何登录
+      #       见 README「服务器上安装 commandcode CLI 并登录」一节。
+      # 原因:一键导入只检测容器内的 /root/.commandcode/auth.json,容器默认
+      #       看不到宿主机文件,必须把凭证目录只读挂进去。
+      # 做法:root 登录 → 取消下一行注释,执行 docker compose up -d 重建即可;
+      #       非 root 登录 → 改挂 ~/.commandcode:/cc-auth:ro,并在上方 environment
+      #       加一行 CCP_CLI_AUTH_FILE=/cc-auth/auth.json,同样 up -d 重建。
+      # 替代:不挂载也行 —— 网页「密钥管理 → 批量导入」直接粘贴 user_* 密钥,
+      #       效果完全相同。
       # - /root/.commandcode:/root/.commandcode:ro

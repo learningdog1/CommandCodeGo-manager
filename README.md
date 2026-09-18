@@ -197,13 +197,13 @@ docker compose logs -f            # 确认启动
 - 容器内已设 `HOST=0.0.0.0 PORT=3050 CCP_DATA_DIR=/app/data`;compose 端口绑 `0.0.0.0`
   (公网/局域网直接可达,管理界面由 `CCP_ADMIN_TOKEN` 保护),数据落宿主机 `./data/`
   (SQLite 库 + config.json),升级重建不丢。
-- **「一键导入」在 Docker 下需挂载凭证**:密钥管理页对 CLI 登录的自动检测读的是**容器内**
-  的 `~/.commandcode/auth.json`(root 即 `/root/.commandcode/auth.json`),宿主机上 `cmd login`
-  产生的凭证默认进不了容器,检测不到。root 用户在宿主机执行过 `cmd login` 后,在 compose 的
-  `volumes` 加一行 `- /root/.commandcode:/root/.commandcode:ro` 再 `docker compose up -d`
-  即可(容器内按原路径解析,无需其他配置);非 root 用户挂 `~/.commandcode:/cc-auth:ro` 并在
-  `environment` 设 `CCP_CLI_AUTH_FILE=/cc-auth/auth.json`。也可以跳过一键导入,直接用
-  「批量导入」粘贴 `user_*` 密钥,效果相同。
+- **「一键导入」在 Docker 下需挂载凭证**:自动检测只看**容器内**的 `~/.commandcode/auth.json`
+  (root 即 `/root/.commandcode/auth.json`),宿主机上的凭证默认进不了容器。想让按钮出现:
+  先在这台服务器上装好 CLI 并登录(见下节「服务器上安装 commandcode CLI 并登录」),再在
+  compose 的 `volumes` 加一行 `- /root/.commandcode:/root/.commandcode:ro`,执行
+  `docker compose up -d` 重建即可;非 root 用户挂 `~/.commandcode:/cc-auth:ro` 并在
+  `environment` 设 `CCP_CLI_AUTH_FILE=/cc-auth/auth.json`。不想折腾就直接用「批量导入」
+  粘贴 `user_*` 密钥,效果完全相同。
 - 监听地址/端口**不进**管理界面设置(会被环境变量固定,设置页已禁改):对外端口改
   compose 的 `ports`;仅需本机+反代时可改回 `127.0.0.1:3050:3050`。
 - 首次配置:浏览器打开管理界面输入 admin token 后配置,或直接编辑宿主机 `./data/config.json`
@@ -214,6 +214,37 @@ docker compose logs -f            # 确认启动
 - 升级:方式 A `docker compose pull && docker compose up -d`;方式 B `git pull && docker compose up -d --build`。备份:拷走 `./data/` 即可。
 - **内存 ≤ 1GB 的服务器**:前端构建(vite + echarts)可能 OOM,请走方式 A 直接拉现成镜像,
   不要在服务器上构建。
+
+#### 服务器上安装 commandcode CLI 并登录(「一键导入」前置)
+
+服务器上跑 `cmd login` 有个坑:登录走 OAuth,CLI 会在服务器本机的**随机端口**起一个回调服务,
+打印形如 `http://127.0.0.1:33925/callback` 的授权链接,等浏览器访问它完成授权——但服务器上
+没有浏览器,链接里的 `127.0.0.1` 也不指向你的电脑,直接登录会卡在最后一步。两种解法:
+
+**方法一:SSH 端口转发(实测可用)**
+
+```bash
+# 1) 本地电脑新开一个终端,把服务器的回调端口转发到本地
+#    端口每次登录都随机 —— 以 cmd login 实际打印的为准,对不上就按实际端口重开隧道
+ssh -L 33925:127.0.0.1:33925 root@<服务器IP>
+
+# 2) 在这条 SSH 会话里执行登录,复制它打印的授权链接
+cmd login
+
+# 3) 用本地浏览器打开该链接,点 Authorize 完成授权
+#    (Chrome 可能弹「Local Network Access」询问,点允许)
+#    回调经隧道打回服务器,凭证写入 ~/.commandcode/auth.json,之后无需再登录
+```
+
+> 不便开隧道时的土办法:在本地浏览器完成授权后,从地址栏复制带 `?code=...&state=...` 的
+> 完整回调 URL,回到服务器上 `curl '该URL'`(code 几分钟内有效)。
+
+**方法二:API key 登录(不经浏览器回调)**
+
+在 commandcode.ai 网页后台(Studio → API keys)创建 API key,按 CLI 登录提示粘贴进终端
+即可完成登录。
+
+> 凭证文件:`~/.commandcode/auth.json`;清除登录:`cmd logout` 或直接删除该文件。
 
 ### 开发模式
 
