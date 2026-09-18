@@ -141,11 +141,31 @@ server.listen(CFG.port, CFG.host, () => {
   // host 非回环(issue #2 的局域网部署形态):管理 API 无鉴权且随监听地址一起
   // 对网络开放,必须把这件事显式喊出来,而不是等密钥库被扫到才发现
   const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
-  if (!LOOPBACK_HOSTS.has(String(CFG.host).toLowerCase())) {
-    log('warn', 'Non-loopback host: admin API is unauthenticated and reachable from the network', {
-      host: CFG.host, port: CFG.port,
-      hint: '管理界面与密钥库将对可达此地址的所有客户端开放,仅部署在受信网络;公网暴露请置于反代之后加 TLS 与访问控制',
+  // 可选 admin token(容器/公网部署):设了 CCP_ADMIN_TOKEN 才启用,见 src/admin/api.mjs
+  const ADMIN_TOKEN = process.env.CCP_ADMIN_TOKEN ?? '';
+  if (ADMIN_TOKEN) {
+    log('info', 'Admin token auth enabled (CCP_ADMIN_TOKEN)', {
+      hint: '管理界面与 /admin/api 需要 Bearer token;SSE 日志流可用 ?token= 查询参数',
     });
+    // docker-compose.yml 模板里带的占位值:公开仓库可查,等于没设,必须喊出来
+    if (/^(change-me|please-change-me|test|123456)$/i.test(ADMIN_TOKEN.trim())) {
+      log('warn', 'CCP_ADMIN_TOKEN is a well-known placeholder from the compose template', {
+        hint: '任何人都能从公开仓库查到这个值,请在 docker-compose.yml 改成自己的强随机令牌(如 openssl rand -hex 24)后重建容器',
+      });
+    }
+  }
+  if (!LOOPBACK_HOSTS.has(String(CFG.host).toLowerCase())) {
+    if (ADMIN_TOKEN) {
+      log('warn', 'Non-loopback host: admin API exposed to the network (token-protected)', {
+        host: CFG.host, port: CFG.port,
+        hint: '管理界面已有 token 鉴权;/v1 端点仍由客户端密钥体系把守;公网建议仍置于反代之后加 TLS',
+      });
+    } else {
+      log('warn', 'Non-loopback host: admin API is unauthenticated and reachable from the network', {
+        host: CFG.host, port: CFG.port,
+        hint: '管理界面与密钥库将对可达此地址的所有客户端开放,仅部署在受信网络;公网暴露请置于反代之后加 TLS 与访问控制,或设 CCP_ADMIN_TOKEN',
+      });
+    }
   }
   if (CLIENT_DRAIN_TIMEOUT_MS > 0) {
     log('info', 'Client drain timeout enabled', { timeoutMs: CLIENT_DRAIN_TIMEOUT_MS });

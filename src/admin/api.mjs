@@ -1,10 +1,11 @@
 // Admin REST API:挂 /admin/api/*,供 Web 管理界面调用。
-// 鉴权:无 token(H1 已取消,管理界面免登录)。写操作做**同源 Origin 校验**
+// 鉴权:可选 token —— 设了 CCP_ADMIN_TOKEN(容器/公网部署)才启用 Bearer 校验,
+// 不设则维持原行为(免登录,回环/受信网络,H1)。写操作另有**同源 Origin 校验**
 // 挡浏览器跨站请求(CSRF,issue #2):Origin 必须与请求自身的 Host 一致;
-// curl/本机桌面不带 Origin,不受影响。host 配成非回环时管理面随监听地址
-// 一起对网络开放(无鉴权,启动日志有醒目警告)——网络边界由部署者自负。
+// curl/本机桌面不带 Origin,不受影响。
 import { readFileSync } from 'node:fs';
-import { CFG, saveConfig, configPath, dataDir, defaults, applyEnvOverrides } from '../config.mjs';
+import { timingSafeEqual } from 'node:crypto';
+import { CFG, saveConfig, configPath, dataDir, defaults, applyEnvOverrides, envPinnedKeys } from '../config.mjs';
 import { log } from '../log.mjs';
 import { readBody } from '../http/body.mjs';
 import { sendJSON } from '../http/respond.mjs';
@@ -33,11 +34,33 @@ const APP_VERSION = process.env.CCP_APP_VERSION ?? (() => {
 
 const startedAt = Date.now();
 
+// ── 可选 admin token 鉴权(仅 CCP_ADMIN_TOKEN 存在时启用;容器部署用它保护公网管理面)──
+// Bearer 头为主;SSE(EventSource 无法带自定义头)允许 ?token= 查询参数。
+// timingSafeEqual 防时序侧信道;长度先比,timingSafeEqual 要求等长。
+const ADMIN_TOKEN = process.env.CCP_ADMIN_TOKEN ?? '';
+export const adminTokenEnabled = !!ADMIN_TOKEN;
+
+function adminTokenOk(req, url) {
+  if (!ADMIN_TOKEN) return true;
+  const auth = String(req.headers.authorization ?? '');
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const given = bearer || url.searchParams.get('token') || '';
+  const a = Buffer.from(given);
+  const b = Buffer.from(ADMIN_TOKEN);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export function createAdminApi({ getInflight = () => 0 } = {}) {
   function end(res, status, data) { sendJSON(res, status, data); }
 
   async function handleAdmin(req, res, url) {
     const path = url.pathname.replace(/^\/admin\/api/, '');
+
+    // token 鉴权先于一切(含 Origin 校验):token 本身就是 CSRF 免疫的凭据,
+    // 而未带 token 的请求无论同源跨源都进不来
+    if (!adminTokenOk(req, url)) {
+      return end(res, 401, { error: 'admin token required' });
+    }
 
     // 写操作的 CSRF 防线 = 同源 Origin 校验(issue #2):浏览器跨站请求会带
     // Origin,与请求自身的 Host 不一致即拒绝;本机桌面与 curl 无 Origin 不受影响;
@@ -320,12 +343,16 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
     // ── 设置 ──
     if (req.method === 'GET' && path === '/settings') {
       // 返回「默认值 + 文件层」合并(不含 env 覆写):文件缺键时 UI 仍有兜底值。
+      // 但被 env 固定的键改回**实际生效值**(CFG),否则容器里表单显示 127.0.0.1
+      // 而实际监听 0.0.0.0,保存时每次都被判为「改动」。
       // apiKey(兜底上游密钥)与 adminTokenHash 均不回明文/哈希,只报有无 ——
       // 管理面响应可能进截图与日志,密钥本身没有理由再回显
       let file = {};
       try { file = JSON.parse(readFileSync(configPath(), 'utf-8')); } catch {}
       const { adminTokenHash, apiKey, ...rest } = { ...defaults(), ...file };
-      return end(res, 200, { ...rest, hasApiKey: !!apiKey, hasAdminToken: !!adminTokenHash, dataDir });
+      const pinned = envPinnedKeys();
+      for (const k of pinned) rest[k] = CFG[k];
+      return end(res, 200, { ...rest, hasApiKey: !!apiKey, hasAdminToken: !!adminTokenHash, envPinned: pinned, dataDir });
     }
     if (req.method === 'PUT' && path === '/settings') {
       const body = await readBody(req).catch(() => null);
@@ -336,6 +363,11 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
       delete patch.hasAdminToken;
       delete patch.hasApiKey;
       delete patch.adminToken;
+      // 被 env 固定的键(容器部署的 HOST/PORT 等):改配置文件重启后也无效,
+      // 与其「保存成功却被静默弹回」,不如不落盘并明确告知忽略原因
+      const pinned = new Set(envPinnedKeys());
+      const ignored = [...pinned].filter(k => k in patch && String(patch[k]) !== String(CFG[k]));
+      for (const k of ignored) delete patch[k];
       try {
         // host/port 只在下次启动生效(不 rebind):与当前生效值比较,实际改动了才提示
         const restartRequired = ['host', 'port'].filter(k => k in patch && String(patch[k]) !== String(CFG[k]));
@@ -344,7 +376,7 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
         // 以 env 启动的部署参数(CC_API_BASE/PORT 等,否则保存一次设置行为就漂移)
         for (const k of Object.keys(saved)) CFG[k] = saved[k];
         applyEnvOverrides(CFG);
-        return end(res, 200, { ok: true, restartRequired, saved: { ...saved, adminTokenHash: undefined, apiKey: undefined } });
+        return end(res, 200, { ok: true, restartRequired, ignored, saved: { ...saved, adminTokenHash: undefined, apiKey: undefined } });
       } catch (e) {
         return end(res, 500, { error: e.message });
       }

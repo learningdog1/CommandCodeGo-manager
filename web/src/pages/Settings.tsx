@@ -63,6 +63,8 @@ export function Settings() {
   const [loadErr, setLoadErr] = useState('');
   const [info, setInfo] = useState<{ dataDir?: string }>({});
   const [saving, setSaving] = useState(false);
+  // 被环境变量固定的键(容器部署的 HOST/PORT):改配置文件不生效,字段禁改
+  const [pinned, setPinned] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let alive = true;
@@ -71,6 +73,7 @@ export function Settings() {
         const s = await fetchSettings();
         if (!alive) return;
         setInfo({ dataDir: s.dataDir });
+        setPinned(new Set(s.envPinned ?? []));
         setForm({
           port: s.port != null ? String(s.port) : '',
           host: s.host ?? '',
@@ -138,9 +141,13 @@ export function Settings() {
       if (form.projectSlug.trim()) patch.projectSlug = form.projectSlug.trim();
       if (form.logFile.trim()) patch.logFile = form.logFile.trim();
       const r = await putSettings(patch);
-      toast('ok', r.restartRequired?.length
-        ? `已保存;${r.restartRequired.join(' / ')} 需重启服务后生效`
-        : '已保存,即时生效');
+      if (r.ignored?.length) {
+        toast('info', `已保存;${r.ignored.join(' / ')} 由环境变量固定,修改未生效(容器部署请在 docker-compose.yml 调整)`);
+      } else {
+        toast('ok', r.restartRequired?.length
+          ? `已保存;${r.restartRequired.join(' / ')} 需重启服务后生效`
+          : '已保存,即时生效');
+      }
     } catch (e) {
       toast('err', `保存失败:${(e as Error).message}`);
     } finally {
@@ -174,13 +181,19 @@ export function Settings() {
         <Card>
           <CardHeader title="服务" extra={<span className="text-xs text-txt3">重启后生效</span>} />
           <CardBody className="grid gap-4 p-4 sm:grid-cols-2">
-            <Field label="端口">
+            <Field label="端口"
+              hint={pinned.has('port') ? '由环境变量 PORT 固定(容器部署);对外端口改 docker-compose.yml 的 ports' : undefined}>
               <Input type="number" inputMode="numeric" value={form.port}
+                disabled={pinned.has('port')}
                 onChange={e => set('port', e.target.value)} className="tnum" />
               {fieldErr('port')}
             </Field>
-            <Field label="监听地址" hint="默认 127.0.0.1,仅本机访问">
+            <Field label="监听地址"
+              hint={pinned.has('host')
+                ? '由环境变量 HOST 固定(容器内须为 0.0.0.0)'
+                : '默认 127.0.0.1,仅本机访问'}>
               <Input value={form.host} onChange={e => set('host', e.target.value)}
+                disabled={pinned.has('host')}
                 placeholder="127.0.0.1" className="tnum" />
             </Field>
           </CardBody>

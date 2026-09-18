@@ -1,6 +1,6 @@
 // 实时请求日志(Phase 3.2):历史查询 + SSE 实时追加(ticket 一次性票据,断线 1.5s 自动重连)。
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { fetchClientKeys, fetchLogs, type ClientKey, type RequestRow } from '../api';
+import { fetchClientKeys, fetchLogs, tokenQuery, type ClientKey, type RequestRow } from '../api';
 import {
   Badge, Button, Card, CardHeader, EmptyState, Loading, Pagination, Select,
   Table, Td, Th, toast, fmtInt, fmtK, fmtMs, fmtTime,
@@ -209,9 +209,9 @@ export function Logs() {
   const connect = useCallback(async () => {
     if (disposedRef.current) return;
     try {
-      // 管理界面已取消 token(H1):SSE 直接连接,断线 1.5s 自动重连
+      // EventSource 无法带 Authorization 头:启用 CCP_ADMIN_TOKEN 时令牌走查询参数
       esRef.current?.close();
-      const es = new EventSource('/admin/api/logs/stream');
+      const es = new EventSource('/admin/api/logs/stream' + tokenQuery());
       esRef.current = es;
       es.onmessage = ev => {
         if (!liveRef.current) return; // 暂停期间丢弃(恢复实时时统一补拉,见 toggleLive)

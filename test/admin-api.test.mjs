@@ -138,7 +138,12 @@ test('admin:settings 读取(默认值兜底)与写回(白名单过滤)', async (
   try {
     const get = await (await s.proxy.get('/admin/api/settings')).json();
     assert.equal(get.host, '127.0.0.1');
-    assert.equal(get.port, 3050);
+    // 测试进程以 PORT env 启动:被 env 固定的键必须回「实际生效值」而非文件层,
+    // 否则容器里表单显示 127.0.0.1/3050 而实际监听 0.0.0.0/随机端口
+    assert.equal(get.port, s.proxy.port);
+    assert.ok(get.envPinned.includes('port'), 'envPinned 报告 PORT');
+    assert.ok(get.envPinned.includes('host'), 'envPinned 报告 HOST');
+    assert.ok(get.envPinned.includes('apiBase'), 'envPinned 报告 CC_API_BASE');
     const putR = await fetch(s.proxy.base + '/admin/api/settings', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ logLevel: 'debug', bogusKey: 'x' }),
@@ -147,6 +152,45 @@ test('admin:settings 读取(默认值兜底)与写回(白名单过滤)', async (
     const cfg = JSON.parse(readFileSync(join(s.proxy.dir, 'config.json'), 'utf-8'));
     assert.equal(cfg.logLevel, 'debug');
     assert.equal('bogusKey' in cfg, false, '未知键被白名单过滤');
+  } finally { await s.close(); }
+});
+
+test('admin:CCP_ADMIN_TOKEN —— 无/错令牌 401,对令牌放行(Bearer 与 ?token=)', async () => {
+  const s = await setup({ env: { CCP_ADMIN_TOKEN: 'tok_secret_1' } });
+  try {
+    assert.equal((await s.proxy.get('/admin/api/overview')).status, 401, '无令牌 401');
+    assert.equal((await s.proxy.get('/admin/api/overview',
+      { headers: { Authorization: 'Bearer wrong' } })).status, 401, '错令牌 401');
+    const ok = await s.proxy.get('/admin/api/overview',
+      { headers: { Authorization: 'Bearer tok_secret_1' } });
+    assert.equal(ok.status, 200, 'Bearer 对令牌放行');
+    // SSE(EventSource 带不了头)走 ?token= 查询参数
+    const sse = await s.proxy.get('/admin/api/logs/stream?token=tok_secret_1');
+    assert.equal(sse.status, 200, 'SSE 查询参数令牌放行');
+    assert.match(sse.headers.get('content-type') ?? '', /text\/event-stream/);
+    assert.equal((await s.proxy.get('/admin/api/logs/stream?token=wrong')).status, 401, 'SSE 错令牌 401');
+    // /v1 业务端点不受管理令牌影响
+    const chat = await s.proxy.post('/v1/chat/completions',
+      { model: 'm', messages: [{ role: 'user', content: 'hi' }] },
+      { Authorization: 'Bearer user_x' });
+    assert.equal(chat.status, 200, '/v1 不受 admin token 保护');
+  } finally { await s.close(); }
+});
+
+test('admin:PORT env 固定时改端口不落盘,返回 ignored 明确告知', async () => {
+  const s = await setup();
+  try {
+    const putR = await fetch(s.proxy.base + '/admin/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port: 9999, logLevel: 'warn' }),
+    });
+    assert.equal(putR.status, 200);
+    const json = await putR.json();
+    assert.deepEqual(json.ignored, ['port'], '端口被 env 固定,修改被忽略并报告');
+    assert.deepEqual(json.restartRequired, [], '忽略后不再提示重启');
+    const cfg = JSON.parse(readFileSync(join(s.proxy.dir, 'config.json'), 'utf-8'));
+    assert.notEqual(cfg.port, 9999, '9999 未写进配置文件');
+    assert.equal(cfg.logLevel, 'warn', '其余键正常保存');
   } finally { await s.close(); }
 });
 

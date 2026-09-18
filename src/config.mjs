@@ -100,4 +100,19 @@ function saveConfig(patch) {
   return current;
 }
 
+// 配置键 → 环境变量名映射(与 applyEnvOverrides 的覆写关系一一对应,仅作报告用;
+// 容器部署固定 HOST/PORT 时,UI 需禁改这些键,否则「保存成功却被静默弹回」)。
+const ENV_KEYS = {
+  port: 'PORT', host: 'HOST', apiBase: 'CC_API_BASE', projectSlug: 'PROJECT_SLUG',
+  logFile: 'LOG_FILE', useProviderModels: 'CC_USE_PROVIDER_MODELS', zdr: 'CMD_ZDR',
+  fingerprintSalt: 'CC_FINGERPRINT_SALT', deviceProjectDir: 'CC_DEVICE_PROJECT_DIR',
+  cliMode: 'CC_CLI_MODE', cliSessionMode: 'CC_CLI_SESSION_MODE',
+  emptySystemPlaceholder: 'CC_EMPTY_SYSTEM_PLACEHOLDER',
+};
+
+/** 当前被环境变量覆写的配置键列表(这些键改配置文件不会生效)。 */
+export function envPinnedKeys() {
+  return Object.entries(ENV_KEYS).filter(([, env]) => process.env[env]).map(([k]) => k);
+}
+
 export { CFG, loadConfig, saveConfig, configPath, applyEnvOverrides };

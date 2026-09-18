@@ -174,6 +174,8 @@ node dist/commandcodego-manager.mjs   # data/ 与 public/ 取脚本同级目录
 ```bash
 mkdir ccp && cd ccp
 curl -O https://raw.githubusercontent.com/learningdog1/CommandCodeGo-manager/main/docker-compose.yml
+# 必改:编辑 CCP_ADMIN_TOKEN 为强随机令牌(管理界面鉴权,见「安全须知」)
+#   openssl rand -hex 24
 docker compose up -d && docker compose logs -f
 # 升级:docker compose pull && docker compose up -d
 ```
@@ -192,11 +194,14 @@ docker compose up -d --build      # 构建约 1-3 分钟;小内存机器见下�
 docker compose logs -f            # 确认启动
 ```
 
-- 容器内已设 `HOST=0.0.0.0 PORT=3050 CCP_DATA_DIR=/app/data`;compose 把端口绑在
-  `127.0.0.1:3050`,数据落宿主机 `./data/`(SQLite 库 + config.json),升级重建不丢。
-- 首次配置:浏览器打开管理界面配置,或直接编辑宿主机 `./data/config.json` 后
-  `docker compose restart`(环境变量覆写的 HOST/PORT 不会回写进文件)。
-- 公网部署置于反代之后(TLS + 访问控制,见「安全须知」)。反代三个要点:
+- 容器内已设 `HOST=0.0.0.0 PORT=3050 CCP_DATA_DIR=/app/data`;compose 端口绑 `0.0.0.0`
+  (公网/局域网直接可达,管理界面由 `CCP_ADMIN_TOKEN` 保护),数据落宿主机 `./data/`
+  (SQLite 库 + config.json),升级重建不丢。
+- 监听地址/端口**不进**管理界面设置(会被环境变量固定,设置页已禁改):对外端口改
+  compose 的 `ports`;仅需本机+反代时可改回 `127.0.0.1:3050:3050`。
+- 首次配置:浏览器打开管理界面输入 admin token 后配置,或直接编辑宿主机 `./data/config.json`
+  后 `docker compose restart`(HOST/PORT 不会回写进文件)。
+- 更稳妥的公网形态仍是反代之后 + TLS(见「安全须知」)。反代三个要点:
   `proxy_set_header Host $host`(管理写操作的同源 Origin 校验依赖它)、
   `proxy_buffering off`(`/v1` SSE 流式)、`keepalive_timeout` ≤ 60s(见下节)。
 - 升级:方式 A `docker compose pull && docker compose up -d`;方式 B `git pull && docker compose up -d --build`。备份:拷走 `./data/` 即可。
@@ -301,7 +306,13 @@ key 填 `sk-ccp-*` 客户端密钥(或上游 `user_*`,直通模式默认开启)�
 ## 安全须知
 
 - **上游 key 明文存储**:调用上游必需,`data/` 目录请保持权限私有(600/700),不要提交到任何仓库。
-- **管理 API 无鉴权**:默认只听 `127.0.0.1`(本机使用)。把 `host` 改成 `0.0.0.0`/局域网 IP
+- **管理 API 鉴权(按部署形态)**:
+  - 裸 Node / 桌面版:免登录(仅回环默认),写操作由同源 Origin 校验挡跨站请求(CSRF)。
+  - Docker / 公网:设 `CCP_ADMIN_TOKEN` 环境变量后,管理界面与 `/admin/api/*` 要求
+    `Authorization: Bearer <token>`(浏览器首次打开会弹令牌输入;SSE 日志流用 `?token=`)。
+    docker-compose 模板已带此配置,**公网部署必须改成强随机值**(`openssl rand -hex 24`),
+    保留模板默认值 `change-me` 时启动日志会持续告警。仅设该变量才启用鉴权,不影响裸跑。
+- **默认只听 `127.0.0.1`**(裸 Node/桌面):把 `host` 改成 `0.0.0.0`/局域网 IP
   后,代理与管理界面随监听地址一起对网络开放(桌面版自 v0.2.4 起跟随此配置,启动日志有醒目告警)——
   仅部署在受信网络;公网暴露请置于反向代理之后加 TLS 与访问控制。
   写操作有同源 Origin 校验挡浏览器跨站请求(CSRF):局域网设备用 `http://<本机IP>:<端口>`

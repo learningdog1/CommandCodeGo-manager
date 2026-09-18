@@ -6,7 +6,7 @@ import { NavLink, useLocation, useOutlet } from 'react-router-dom';
 import {
   Terminal, LayoutDashboard, ScrollText, BarChart3, Boxes, KeyRound, Fingerprint, Settings, Users,
 } from 'lucide-react';
-import { fetchOverview, type Overview } from '../api';
+import { fetchOverview, setAdminToken, type ApiError, type Overview } from '../api';
 import { ThemeToggle, toast } from '../ui';
 
 const NAV_GROUPS: { title: string; items: { to: string; label: string; icon: typeof LayoutDashboard; end: boolean }[] }[] = [
@@ -72,8 +72,54 @@ function KeepAliveOutlet() {
   );
 }
 
+// 令牌输入门:服务端设了 CCP_ADMIN_TOKEN(容器/公网部署)时,任何 401 都会
+// 落到这里;输入正确令牌存 localStorage 后自动放行整页。
+function TokenGate({ onRetry }: { onRetry: () => void }) {
+  const [val, setVal] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!val.trim() || busy) return;
+    setBusy(true); setErr('');
+    setAdminToken(val.trim());
+    try {
+      await fetchOverview();   // 探针:令牌对不对由服务端说了算
+      onRetry();
+    } catch (e) {
+      setErr((e as Error).message || '令牌无效');
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex h-full items-center justify-center p-6">
+      <div className="w-full max-w-sm rounded-2xl border border-line bg-panel p-6 shadow-lg">
+        <div className="brand-gradient mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl text-white shadow-md">
+          <Terminal size={24} strokeWidth={2.4} />
+        </div>
+        <div className="text-center text-[15px] font-bold text-txt">管理界面已启用令牌鉴权</div>
+        <div className="mt-1 text-center text-xs text-txt3">令牌由部署者在 CCP_ADMIN_TOKEN(如 docker-compose.yml)中设置</div>
+        <input
+          type="password" autoFocus value={val}
+          onChange={e => setVal(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') void submit(); }}
+          placeholder="输入管理令牌"
+          className="tnum mt-5 w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm text-txt outline-none transition-colors focus:border-accent"
+        />
+        {err && <div className="mt-2 text-center text-xs text-err">{err}</div>}
+        <button
+          onClick={() => void submit()} disabled={busy || !val.trim()}
+          className="brand-gradient mt-4 w-full rounded-lg py-2 text-sm font-semibold text-white transition-opacity disabled:opacity-50">
+          {busy ? '验证中…' : '进入管理界面'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function AppShell() {
   const [ov, setOv] = useState<Overview | null>(null);
+  // unknown=尚未判定;no=服务端要求令牌(401);yes=已通过(或服务端未启用鉴权)
+  const [authed, setAuthed] = useState<'unknown' | 'no' | 'yes'>('unknown');
   const location = useLocation();
   const meta = PAGE_META.slice().reverse().find(m => location.pathname === m.match || location.pathname.startsWith(m.match + '/'))
     ?? PAGE_META[0];
@@ -81,12 +127,23 @@ export function AppShell() {
   useEffect(() => {
     let alive = true;
     const tick = async () => {
-      try { const d = await fetchOverview(); if (alive) setOv(d); } catch { /* 状态条静默失败 */ }
+      try {
+        const d = await fetchOverview();
+        if (alive) { setOv(d); setAuthed('yes'); }
+      } catch (e) {
+        // 401 = 服务端启用了 CCP_ADMIN_TOKEN 且当前令牌缺失/错误 → 弹令牌门;
+        // 其余错误(服务重启中等)维持原有静默行为
+        if (alive && (e as ApiError).status === 401) setAuthed('no');
+      }
     };
     tick();
     const timer = setInterval(tick, 15_000);
     return () => { alive = false; clearInterval(timer); };
-  }, []);
+  }, [authed]);
+
+  if (authed === 'no') {
+    return <TokenGate onRetry={() => { setAuthed('unknown'); }} />;
+  }
 
   return (
     <div className="flex h-full">
@@ -133,14 +190,16 @@ export function AppShell() {
             </div>
             <button
               onClick={() => {
-                navigator.clipboard?.writeText(`http://127.0.0.1:${ov?.port ?? 3050}`).then(
+                // 用户实际访问的地址(而非写死 127.0.0.1:port):局域网/容器/反代
+                // 部署下这才是对的「服务地址」
+                navigator.clipboard?.writeText(window.location.origin).then(
                   () => toast('ok', '已复制服务地址'),
                   () => {},
                 );
               }}
               className="tnum mt-1.5 block w-full truncate rounded bg-bg px-1.5 py-1 text-left text-[11px] text-txt2 transition-colors hover:text-accent"
               title="点击复制服务地址">
-              http://127.0.0.1:{ov?.port ?? '…'}
+              {window.location.origin}
             </button>
             <div className="mt-1.5 flex items-center justify-between text-[10px] text-txt3">
               <span>在途 {ov?.inflight ?? 0}</span>

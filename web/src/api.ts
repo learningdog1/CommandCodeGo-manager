@@ -1,6 +1,23 @@
 // Admin API 客户端(H1:管理界面已取消 token,API 仅监听回环地址,
 // 服务端以 Origin 校验挡跨站修改请求)。
+// 容器/公网部署会设 CCP_ADMIN_TOKEN:服务端启用 Bearer 鉴权后,这里统一
+// 附带 localStorage 里的令牌;401 由 AppShell 捕获并渲染令牌输入门。
 // 所有页面的数据获取/变更都走这里,类型即前后端契约。
+
+const TOKEN_KEY = 'ccp_admin_token';
+
+export function adminToken(): string {
+  return localStorage.getItem(TOKEN_KEY) ?? '';
+}
+export function setAdminToken(t: string) {
+  if (t) localStorage.setItem(TOKEN_KEY, t);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+/** SSE 专用:EventSource 无法带自定义头,token 走查询参数(服务端同样接受) */
+export function tokenQuery(prefix = '?'): string {
+  const t = adminToken();
+  return t ? `${prefix}token=${encodeURIComponent(t)}` : '';
+}
 
 export class ApiError extends Error {
   status: number;
@@ -14,9 +31,13 @@ export class ApiError extends Error {
 }
 
 export async function api<T = unknown>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
+  const token = adminToken();
   const res = await fetch(path, {
     method: opts.method ?? 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   if (!res.ok) {
@@ -76,6 +97,8 @@ export interface Settings {
   logFile?: string; logLevel?: string; zdr?: boolean; useProviderModels?: boolean;
   modelRefreshIntervalMs?: number; accountUsageRefreshMs?: number; allowDirectUpstreamKey?: boolean; logRetentionDays?: number;
   emptySystemPlaceholder?: boolean; dataDir?: string;
+  /** 被环境变量固定的键(容器部署的 HOST/PORT 等):改配置文件不生效,UI 应禁改 */
+  envPinned?: string[];
 }
 
 export interface ModelItem {
@@ -162,7 +185,7 @@ export const batchImportUpstreamKeys = (text: string) =>
 export const fetchClientKeys = () => api<{ rows: ClientKey[] }>('/admin/api/client-keys');
 export const fetchSettings = () => api<Settings>('/admin/api/settings');
 export const putSettings = (patch: Partial<Settings>) =>
-  api<{ ok: boolean; restartRequired?: string[] }>('/admin/api/settings', { method: 'PUT', body: patch });
+  api<{ ok: boolean; restartRequired?: string[]; ignored?: string[] }>('/admin/api/settings', { method: 'PUT', body: patch });
 export const refreshModels = () =>
   api<{ source: 'upstream' | 'builtin'; count: number; reason?: string }>('/admin/api/models/refresh', { method: 'POST' });
 export const fetchFingerprints = () => api<FingerprintsInfo>('/admin/api/fingerprints');
