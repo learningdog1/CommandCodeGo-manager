@@ -50,13 +50,16 @@ jobs:
             echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
           fi
 
-      # 按 digest 推 GHCR(不打 tag,merge 阶段统一打)
+      # 按 digest 推 GHCR(不打 tag,merge 阶段统一打)。provenance 必须关:
+      # 默认的证明清单含每次构建的调用元数据,同内容两次推送也会得到不同顶层
+      # digest,导致「GHCR 的 digest 在 Docker Hub 命名空间下 not found」
       - name: Build and push by digest (GHCR)
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: ${{ matrix.platform }}
+          provenance: false
           outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=build-${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=build-${{ matrix.suffix }}
@@ -68,6 +71,7 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
+          provenance: false
           outputs: type=image,name=${{ env.DH_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=build-${{ matrix.suffix }}
 
