@@ -168,26 +168,26 @@ node dist/commandcodego-manager.mjs   # data/ 与 public/ 取脚本同级目录
 运行层零 npm 依赖,基于 `node:22-alpine`)。
 
 **A. 直接用现成镜像**(推荐;CI 在打 `v*` 标签或手动触发时用原生 runner 构建双架构镜像
-`linux/amd64` + `linux/arm64`,同时发布到 Docker Hub 与 GHCR,内容相同任选):
+`linux/amd64` + `linux/arm64` 并发布到 [Docker Hub](https://hub.docker.com/r/cashewchickengazgazgood/commandcodego-manager)
+,compose 默认就是拉镜像,三行命令零编辑):
 
 ```bash
 mkdir ccp && cd ccp
 curl -O https://raw.githubusercontent.com/learningdog1/CommandCodeGo-manager/main/docker-compose.yml
-# 编辑 docker-compose.yml:注释掉 build: .,改用其中一行:
-#   image: cashewchickengazgazgood/commandcodego-manager:latest    # Docker Hub
-#   image: ghcr.io/learningdog1/commandcodego-manager:latest       # GHCR
 docker compose up -d && docker compose logs -f
 # 升级:docker compose pull && docker compose up -d
 ```
 
-> GHCR 镜像默认 Private:如需公网匿名拉取,到仓库 Packages → 该镜像 → Package settings →
-> Change visibility 改 Public(不改则需 `docker login ghcr.io`);Docker Hub 镜像公开,可直接拉。
+> GHCR 上有一份同内容镜像 `ghcr.io/learningdog1/commandcodego-manager`,但默认 Private
+> (匿名拉取需在 Packages 设置改 Public,或 `docker login ghcr.io`);Docker Hub 镜像公开,
+> 优先用它即可。
 
-**B. 服务器上从源码构建**(改动自定义或不想依赖镜像仓库;构建约 1-3 分钟):
+**B. 服务器上从源码构建**(改了代码或不想依赖镜像仓库;构建约 1-3 分钟):
 
 ```bash
 git clone https://github.com/learningdog1/CommandCodeGo-manager.git
 cd CommandCodeGo-manager
+# 编辑 docker-compose.yml:注释 image: 行,取消注释 build: .
 docker compose up -d --build      # 构建约 1-3 分钟;小内存机器见下方说明
 docker compose logs -f            # 确认启动
 ```

@@ -1,8 +1,11 @@
 services:
   ccp:
-    build: .
-    # 走镜像仓库时替换为 image: cashewchickengazgazgood/commandcodego-manager:latest
-    # (Docker Hub)或 image: ghcr.io/learningdog1/commandcodego-manager:latest
+    # 默认拉 Docker Hub 现成镜像(CI 构建,linux/amd64 + arm64,公开直拉)
+    image: cashewchickengazgazgood/commandcodego-manager:latest
+    # 源码构建(改了代码或不想依赖镜像仓库):注释上面 image 行,启用下面这行
+    # build: .
+    # GHCR 同内容镜像:ghcr.io/learningdog1/commandcodego-manager:latest(默认 Private,
+    # 匿名拉取需先在 Packages 设置改 Public)
     container_name: commandcodego
     restart: unless-stopped
     ports:
