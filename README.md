@@ -23,7 +23,7 @@ Command Code 订阅反向代理:把 [Command Code](https://commandcode.ai)(含 $
 - 每个 key 确定性设备指纹(同 key 恒定同设备),对齐官方 CLI 1.53.1 的流量形态;管理界面「设备指纹」页可视化查验伪造形态与上报结果
 - 零输出 / 连续超时响应转 429,让下游 SDK 自动重试;客户端断连时真实中止上游
 - 客户端密钥体系:`sk-ccp-*` 密钥(哈希存储、显式绑定上游 key、可吊销);也支持 `user_*` 直通
-- Web 管理界面:admin token 鉴权、实时请求日志(SSE)、用量聚合、密钥管理、协议漂移告警;「账号用量」面板矩阵展示每个账号的模板条(5 小时滚动 / 周 / 月度)、信用余额与期账累计,支持单账号或全部刷新、手动切换账户,数据每 5 分钟自动刷新
+- Web 管理界面(免登录,仅回环可用):实时请求日志(SSE)、用量聚合、密钥管理、协议漂移告警;「账号用量」面板矩阵展示每个账号的模板条(5 小时滚动 / 周 / 月度)、信用余额与期账累计,支持单账号或全部刷新、手动切换账户,数据每 5 分钟自动刷新
 - 额度/窗口耗尽自动轮转:402 信用耗尽持久标记换 key;5 小时滚动 / 周窗口到顶(429 `USAGE_EXCEEDED`)运行时标记到重置时刻,窗口恢复自动回切;绑定与直通(user_* 已入库)密钥均参与,瞬态 429 不轮转
 - SQLite 持久化(内置 `node:sqlite`,零原生依赖):请求日志 30 天可配,用量按天×key×模型聚合
 - 零运行时依赖(Node ≥ 22.5);桌面应用与 esbuild 单文件分发
@@ -94,9 +94,7 @@ Windows 设备身份**——CPU / 内存 / 时区 / MAC / MachineGuid / 主机�
 | Windows x64 | `CommandCodeGo Manager-Portable-<v>-x64.exe` | 免安装便携版 |
 | Windows 通用 | `CommandCodeGo Manager-Setup-<v>.exe` | 双架构合并安装器 |
 
-- 首次启动自动生成管理密钥(admin token):弹窗提示,并保存到
-  `~/Library/Application Support/CommandCodeGo Manager/admin-token.txt`(mac)或
-  `%APPDATA%\CommandCodeGo Manager\admin-token.txt`(win),用它在窗口里登录。
+- 管理界面免登录(H1:API 仅监听回环地址,浏览器跨站写由 Origin 校验拦截)。
 - 关闭窗口后服务在**后台继续运行**(托盘图标常驻,默认 `http://127.0.0.1:3050`);
   从托盘菜单「退出」才真正结束。端口被占用时自动向后尝试。
 - 桌面版未做代码签名:macOS 从网络下载的安装包**首次打开会被 Gatekeeper 误报「已损坏」**
@@ -220,7 +218,6 @@ key 填 `sk-ccp-*` 客户端密钥(或上游 `user_*`,直通模式默认开启)�
 | `fingerprintSalt` | 空 | 成批更换设备指纹的逃生口(env `CC_FINGERPRINT_SALT`) |
 | `deviceProjectDir` | 内置 Windows 路径 | 伪造项目目录(env `CC_DEVICE_PROJECT_DIR`) |
 | `emptySystemPlaceholder` | `true` | 无 system 时发空格占位,阻止上游注入 7.5K 默认提示词 |
-| `adminTokenHash` | 首启生成 | Web 管理界面 token 的 sha256(明文只在首启打印一次) |
 | `allowDirectUpstreamKey` | `true` | `user_*` 直通开关;关闭后只认客户端密钥 |
 | `logRetentionDays` | `30` | 请求日志保留天数 |
 
@@ -235,12 +232,15 @@ key 填 `sk-ccp-*` 客户端密钥(或上游 `user_*`,直通模式默认开启)�
 | `CC_NONSTREAM_IDLE_MS` | `90000` | 非流式读空闲超时 |
 | `CC_CLIENT_DRAIN_TIMEOUT_MS` | `0`(关) | 客户端不读响应时的排空超时 |
 | `CC_KEEPALIVE_TIMEOUT_MS` | `65000` | keep-alive(反代侧须小于它) |
+| `CCP_ALLOW_REMOTE_ADMIN` | `0` | host 非回环时放行 `/admin/api/*`(无鉴权裸奔,仅限受信内网自查风险后开启) |
 
 ## 安全须知
 
 - **上游 key 明文存储**:调用上游必需,`data/` 目录请保持权限私有(600/700),不要提交到任何仓库。
-- **管理界面默认只听 `127.0.0.1`**:本机使用。若需暴露公网,请自行置于反向代理之后并加 TLS 与访问控制。
-- **客户端密钥(`sk-ccp-*`)只存哈希**;admin token 只存哈希,明文仅首启打印一次(忘记可在设置页轮换,或删掉 `data/config.json` 里的 `adminTokenHash` 重启重新生成)。
+- **管理 API 无鉴权、仅回环可用**:`/admin/api/*` 默认只在 `host` 为回环地址时响应;
+  host 改成 `0.0.0.0`/局域网地址时整体 403(密钥库、用量与设置不裸奔在网络上)。
+  确需远程管理时设 `CCP_ALLOW_REMOTE_ADMIN=1` 自负其责,并置于反代之后加 TLS 与访问控制。
+- **客户端密钥(`sk-ccp-*`)只存哈希**;设置接口不回显任何明文密钥(`apiKey` 只报有无)。
 - **日志与界面不落消息正文**,密钥一律掩码显示。
 
 ## 内存与部署(公网必读)
