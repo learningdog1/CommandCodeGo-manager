@@ -48,23 +48,26 @@ function fmtUptime(sec: number): string {
   return `${Math.floor(sec / 86400)}d${Math.floor((sec % 86400) / 3600)}h`;
 }
 
-// 监控四页(总览/日志/用量/账号用量)保活:切换导航只切 display,不卸载重挂载。
-// 这几页挂载成本高(重新拉数据 + ECharts 重建 + SSE 重连),来回切换时
-// 重建正是卡顿主因;保活后切换接近零成本,且日志页离开时仍实时接收。
-const KEEP_ALIVE_PATHS = ['/', '/logs', '/usage', '/accounts'];
+// 全部页面保活:切换导航只切 display,不卸载重挂载。页面挂载成本高
+//(重新拉数据 + ECharts 重建 + 大表渲染),弱 GPU 的 Windows/Electron 上
+// 整页重建正是"切一次卡一次"的主因;保活后二次切换接近零成本,日志页
+// 离开时仍实时接收。内存有界:页面固定 8 个,最大的模型页 ~1.4k DOM 节点。
+const KEEP_ALIVE_PATHS = ['/', '/logs', '/usage', '/accounts', '/models', '/keys', '/fingerprints', '/settings'];
 
 function KeepAliveOutlet() {
   const location = useLocation();
   const outlet = useOutlet();
   const cache = useRef(new Map<string, React.ReactNode>());
   const path = location.pathname;
-  if (KEEP_ALIVE_PATHS.includes(path)) cache.current.set(path, outlet);
+  const keepAlive = KEEP_ALIVE_PATHS.includes(path);
+  // 只缓存已知页面;未知路径(重定向中的 "*" 等)走直渲染,不进缓存
+  if (keepAlive) cache.current.set(path, outlet);
   return (
     <>
       {[...cache.current.entries()].map(([p, el]) => (
         <div key={p} className={p === path ? undefined : 'hidden'}>{el}</div>
       ))}
-      {!KEEP_ALIVE_PATHS.includes(path) && outlet}
+      {!keepAlive && outlet}
     </>
   );
 }

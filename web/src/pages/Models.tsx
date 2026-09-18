@@ -2,7 +2,7 @@
 // 每个模型展示单价($/1M 输入/输出/缓存读)、实际用量与参考成本,方便按价格选型。
 // 厂商分组默认折叠(点厂商名展开,头部直接给该组参考成本),搜索/筛选时自动展开。
 // 成本为估算值(官方价目 × 本地 token 计量),实际扣费以账号信用为准。
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Boxes, ChevronDown, Coins, RefreshCw, Search, Sigma, UnfoldVertical, Zap } from 'lucide-react';
 import { fetchUsage, refreshModels, type ModelItem, type UsageRow } from '../api';
 import { CATALOG_BY_ID } from '../model-catalog';
@@ -42,8 +42,10 @@ function copyId(id: string) {
     .catch(() => toast('err', '复制失败'));
 }
 
-// 单个模型行:名称/plan + 单价 + 30 天用量 + 参考成本
-function ModelRow({ m, u }: {
+// 单个模型行:名称/plan + 单价 + 30 天用量 + 参考成本。
+// memo:展开/收起任一厂商时 expanded 集合变化会重渲整页,行内容与 expanded
+// 无关,70 行全部跳过,弱机器上点手风琴的开销从整表降到单卡
+const ModelRow = memo(function ModelRow({ m, u }: {
   m: ModelItem;
   u?: { input: number; cached: number; output: number; requests: number };
 }) {
@@ -88,7 +90,7 @@ function ModelRow({ m, u }: {
       </div>
     </button>
   );
-}
+});
 
 export function Models() {
   const [models, setModels] = useState<ModelItem[] | null>(null);
@@ -260,7 +262,9 @@ export function Models() {
       ) : matched === 0 ? (
         <Card><EmptyState title="无匹配模型" hint={view === 'used' && !query.trim() ? `最近 ${USAGE_DAYS} 天没有经代理的模型调用。` : `没有 id 包含「${query.trim()}」的模型。`} /></Card>
       ) : (
-        <div className="grid gap-3 xl:grid-cols-2">
+        // items-start:卡片各自按内容高度排布。缺省的 stretch 会让同一行的两张卡
+        // 等高 —— 展开左卡时,右卡(折叠态)被拉到同高,看起来像"旁边的厂商也跟着展开"
+        <div className="grid items-start gap-3 xl:grid-cols-2">
           {groups.map(g => {
             const open = expanded.has(g.vendor);
             return (

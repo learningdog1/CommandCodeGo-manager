@@ -17,7 +17,13 @@ export default function EChartReal({ option, className = 'h-64' }: { option: Cha
     if (!ref.current) return;
     const c = echarts.init(ref.current);
     chart.current = c;
-    const ro = new ResizeObserver(() => c.resize());
+    const ro = new ResizeObserver(() => {
+      // 保活页面被 display:none 隐藏时尺寸归零:跳过 resize,避免 0×0 的
+      // canvas 重建/重绘(弱 GPU 机器上隐藏页来回 resize 是纯浪费);
+      // 重新显示时观察器会以真实尺寸再触发一次
+      const el = ref.current;
+      if (el && el.clientWidth > 0 && el.clientHeight > 0) c.resize();
+    });
     ro.observe(ref.current);
     return () => { ro.disconnect(); c.dispose(); chart.current = null; };
   }, []);
