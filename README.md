@@ -165,7 +165,25 @@ node dist/commandcodego-manager.mjs   # data/ 与 public/ 取脚本同级目录
 ### 方式三:Docker(服务器部署)
 
 仓库自带 `Dockerfile` / `docker-compose.yml` / `.dockerignore`,多阶段构建(镜像内编译前端,
-运行层零 npm 依赖,基于 `node:22-alpine`)。服务器上:
+运行层零 npm 依赖,基于 `node:22-alpine`)。
+
+**A. 直接用现成镜像**(推荐;CI 在打 `v*` 标签或手动触发时自动构建 `linux/amd64` + `linux/arm64`
+双架构镜像并发布到 [ghcr.io/learningdog1/commandcodego-manager](https://github.com/learningdog1/CommandCodeGo-manager/pkgs/container/commandcodego-manager),
+配置 `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets 后同步发布 Docker Hub):
+
+```bash
+mkdir ccp && cd ccp
+curl -O https://raw.githubusercontent.com/learningdog1/CommandCodeGo-manager/main/docker-compose.yml
+# 编辑 docker-compose.yml:注释掉 build: .,改用
+#   image: ghcr.io/learningdog1/commandcodego-manager:latest
+docker compose up -d && docker compose logs -f
+# 升级:docker compose pull && docker compose up -d
+```
+
+> 首次发布后如需公网匿名拉取,到 GitHub 仓库右侧 Packages → 该镜像 → Package settings →
+> Change visibility 改为 Public(默认 Private,需 `docker login ghcr.io` 才能拉)。
+
+**B. 服务器上从源码构建**(改动自定义或不想依赖镜像仓库;构建约 1-3 分钟):
 
 ```bash
 git clone https://github.com/learningdog1/CommandCodeGo-manager.git
@@ -181,9 +199,9 @@ docker compose logs -f            # 确认启动
 - 公网部署置于反代之后(TLS + 访问控制,见「安全须知」)。反代三个要点:
   `proxy_set_header Host $host`(管理写操作的同源 Origin 校验依赖它)、
   `proxy_buffering off`(`/v1` SSE 流式)、`keepalive_timeout` ≤ 60s(见下节)。
-- 升级:`git pull && docker compose up -d --build`;备份:拷走 `./data/` 即可。
-- **内存 ≤ 1GB 的服务器**:前端构建(vite + echarts)可能 OOM。改为本机或 CI 构建镜像推到
-  GHCR 等仓库,服务器 compose 里用 `image:` 替代 `build:`,只 `docker compose pull`。
+- 升级:方式 A `docker compose pull && docker compose up -d`;方式 B `git pull && docker compose up -d --build`。备份:拷走 `./data/` 即可。
+- **内存 ≤ 1GB 的服务器**:前端构建(vite + echarts)可能 OOM,请走方式 A 直接拉现成镜像,
+  不要在服务器上构建。
 
 ### 开发模式
 

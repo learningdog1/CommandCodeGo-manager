@@ -1,0 +1,73 @@
+name: docker-release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# GHCR 推送用内置 GITHUB_TOKEN;Docker Hub 用仓库 secrets
+# (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN),未配置时自动跳过、只推 GHCR
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 镜像清单:GHCR 恒有;Docker Hub 仅在配好 secrets 后加入(空用户名会拼出非法镜像名)
+      - name: Compute image list
+        id: images
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          imgs="ghcr.io/learningdog1/commandcodego-manager"
+          if [ -n "$DOCKERHUB_USERNAME" ]; then
+            imgs="$imgs
+          docker.io/${DOCKERHUB_USERNAME}/commandcodego-manager"
+          fi
+          {
+            echo "list<<EOF"
+            echo "$imgs"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.images.outputs.list }}
+          # v0.2.5 → 0.2.5;手动 dispatch 也刷新 latest
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
