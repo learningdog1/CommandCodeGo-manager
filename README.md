@@ -167,21 +167,21 @@ node dist/commandcodego-manager.mjs   # data/ 与 public/ 取脚本同级目录
 仓库自带 `Dockerfile` / `docker-compose.yml` / `.dockerignore`,多阶段构建(镜像内编译前端,
 运行层零 npm 依赖,基于 `node:22-alpine`)。
 
-**A. 直接用现成镜像**(推荐;CI 在打 `v*` 标签或手动触发时自动构建 `linux/amd64` + `linux/arm64`
-双架构镜像并发布到 [ghcr.io/learningdog1/commandcodego-manager](https://github.com/learningdog1/CommandCodeGo-manager/pkgs/container/commandcodego-manager),
-配置 `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets 后同步发布 Docker Hub):
+**A. 直接用现成镜像**(推荐;CI 在打 `v*` 标签或手动触发时用原生 runner 构建双架构镜像
+`linux/amd64` + `linux/arm64`,同时发布到 Docker Hub 与 GHCR,内容相同任选):
 
 ```bash
 mkdir ccp && cd ccp
 curl -O https://raw.githubusercontent.com/learningdog1/CommandCodeGo-manager/main/docker-compose.yml
-# 编辑 docker-compose.yml:注释掉 build: .,改用
-#   image: ghcr.io/learningdog1/commandcodego-manager:latest
+# 编辑 docker-compose.yml:注释掉 build: .,改用其中一行:
+#   image: cashewchickengazgazgood/commandcodego-manager:latest    # Docker Hub
+#   image: ghcr.io/learningdog1/commandcodego-manager:latest       # GHCR
 docker compose up -d && docker compose logs -f
 # 升级:docker compose pull && docker compose up -d
 ```
 
-> 首次发布后如需公网匿名拉取,到 GitHub 仓库右侧 Packages → 该镜像 → Package settings →
-> Change visibility 改为 Public(默认 Private,需 `docker login ghcr.io` 才能拉)。
+> GHCR 镜像默认 Private:如需公网匿名拉取,到仓库 Packages → 该镜像 → Package settings →
+> Change visibility 改 Public(不改则需 `docker login ghcr.io`);Docker Hub 镜像公开,可直接拉。
 
 **B. 服务器上从源码构建**(改动自定义或不想依赖镜像仓库;构建约 1-3 分钟):
 

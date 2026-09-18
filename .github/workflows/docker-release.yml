@@ -5,69 +5,129 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-# GHCR 推送用内置 GITHUB_TOKEN;Docker Hub 用仓库 secrets
-# (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN),未配置时自动跳过、只推 GHCR
+# 原生 runner 矩阵构建(无 QEMU,快一个数量级):amd64 用 ubuntu-latest,
+# arm64 用 ubuntu-24.04-arm(公开仓库免费)。各平台按 digest 推送,merge 阶段
+# 组装多架构 manifest。GHCR 用内置 GITHUB_TOKEN,Docker Hub 用仓库 secrets
+# (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN,未配置时自动跳过只推 GHCR)。
 permissions:
   contents: read
   packages: write
 
+env:
+  GHCR_IMAGE: ghcr.io/learningdog1/commandcodego-manager
+  DH_IMAGE: docker.io/cashewchickengazgazgood/commandcodego-manager
+
 jobs:
-  docker:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            os: ubuntu-latest
+            suffix: amd64
+          - platform: linux/arm64
+            os: ubuntu-24.04-arm
+            suffix: arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      # secrets 不能进 step 的 if:,经 env 中转
+      DH_READY: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
-      # 镜像清单:GHCR 恒有;Docker Hub 仅在配好 secrets 后加入(空用户名会拼出非法镜像名)
-      - name: Compute image list
-        id: images
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-        run: |
-          imgs="ghcr.io/learningdog1/commandcodego-manager"
-          if [ -n "$DOCKERHUB_USERNAME" ]; then
-            imgs="$imgs
-          docker.io/${DOCKERHUB_USERNAME}/commandcodego-manager"
-          fi
-          {
-            echo "list<<EOF"
-            echo "$imgs"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      # secrets 不能进 step 的 if:,改为 shell 内判断:GHCR 恒登录,
-      # Docker Hub 仅在配好 secrets 时登录
       - name: Login to registries
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
-          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          if [ "$DH_READY" = true ]; then
+            echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
           fi
 
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.images.outputs.list }}
-          # v0.2.5 → 0.2.5;手动 dispatch 也刷新 latest
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-
-      - name: Build and push
+      # 按 digest 推 GHCR(不打 tag,merge 阶段统一打)
+      - name: Build and push by digest (GHCR)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=build-${{ matrix.suffix }}
+
+      # 同一镜像再推 Docker Hub:层缓存全命中,只上传 blob 到第二个 registry
+      - name: Push by digest (Docker Hub)
+        if: env.DH_READY == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.DH_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ matrix.suffix }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.suffix }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      DH_READY: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Login to registries
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          if [ "$DH_READY" = true ]; then
+            echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
+          fi
+
+      # tag 规则:v* 标签 → 版本号(去 v)+ latest;手动触发 → latest
+      - name: Create manifest lists and push
+        working-directory: /tmp/digests
+        run: |
+          tags="latest"
+          case "$GITHUB_REF" in
+            refs/tags/v*) tags="$tags ${GITHUB_REF_NAME#v}" ;;
+          esac
+          images=("$GHCR_IMAGE")
+          [ "$DH_READY" = true ] && images+=("$DH_IMAGE")
+          for img in "${images[@]}"; do
+            args=()
+            for t in $tags; do args+=(-t "$img:$t"); done
+            for f in *; do args+=("$img@sha256:$f"); done
+            docker buildx imagetools create "${args[@]}"
+            echo "pushed: $img  tags=[$tags]  platforms=$(ls | wc -l | tr -d ' ')"
+          done
