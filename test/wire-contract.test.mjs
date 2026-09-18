@@ -325,3 +325,30 @@ test('wire(/v1/messages):Anthropic image 块 → data URI → CC image 块', asy
     assert.deepEqual(parts[1], { type: 'text', text: 'what is this' });
   } finally { await s.close(); }
 });
+
+test('wire:上游漏发 totalUsage 但有内容 → 200(零输出判定按内容,不误杀)', async () => {
+  // 上游偶发不回 usage:旧逻辑 (usage?.outputTokens ?? 0) === 0 会把有完整文本的
+  // 响应误报 429(流式则先吐完正文再追加 429 error,SDK 重试造成重复计费)
+  const s = await setup({ ndjson: [
+    '{"type":"text-start"}',
+    '{"type":"text-delta","text":"hello"}',
+    '{"type":"text-end"}',
+    '{"type":"finish","finishReason":"stop"}',
+  ] });
+  try {
+    const r = await s.proxy.post('/v1/chat/completions',
+      { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, AUTH);
+    assert.equal(r.status, 200);
+    const json = await r.json();
+    assert.equal(json.choices[0].message.content, 'hello');
+
+    const r2 = await s.proxy.post('/v1/chat/completions',
+      { model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true }, AUTH);
+    assert.equal(r2.status, 200);
+    assert.match(r2.headers.get('content-type') || '', /text\/event-stream/);
+    const body = await r2.text();
+    assert.match(body, /hello/);
+    assert.match(body, /data: \[DONE\]/);
+    assert.doesNotMatch(body, /zero output tokens/);
+  } finally { await s.close(); }
+});

@@ -688,7 +688,7 @@ async function handleResponses(req, res) {
             //  provider-metadata / tool-input-* / tool-error）全部掉进 default 打成
             // 'Unknown CC event type'，线上刷屏、把真正的错误淹掉。
             case 'text-start': case 'text-end': case 'start': case 'start-step':
-            case 'reasoning-start': case 'reasoning-end': case 'finish-step':
+            case 'reasoning-start': case 'reasoning-end':
             case 'provider-metadata': case 'tool-input-start': case 'tool-input-delta': case 'tool-input-end':
             case 'tool-error':
               // Silent - no user-visible content

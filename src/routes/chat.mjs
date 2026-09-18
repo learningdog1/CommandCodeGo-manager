@@ -60,6 +60,9 @@ function createSseTranslator(model, completionId, created) {
           const delta = chunkIndex === 0 ? { role: 'assistant', content: text } : { content: text };
           chunkIndex++;
           sentRole = true;
+          // 本地按事件计数:上游偶发不回 totalUsage 时,零输出判定仍要有依据
+          // (对齐 /v1/messages 流式;usage 到达时在 finish 里覆盖)
+          this.outputTokens += 1;
           out.push(makeChunk(completionId, created, model, delta, null, null));
           break;
         }
@@ -71,6 +74,7 @@ function createSseTranslator(model, completionId, created) {
             ? { role: 'assistant', reasoning_content: text }
             : { reasoning_content: text };
           chunkIndex++;
+          this.outputTokens += 1; // 纯思考响应(无正文)同样是有效输出
           out.push(makeChunk(completionId, created, model, delta, null, null));
           break;
         }
@@ -85,6 +89,7 @@ function createSseTranslator(model, completionId, created) {
             : { tool_calls: [tcEntry] };
           chunkIndex++;
           toolCallIndex++;
+          this.outputTokens += 20; // 粗估,对齐 /v1/messages 流式
           out.push(makeChunk(completionId, created, model, delta, null, null));
           break;
         }
@@ -95,7 +100,8 @@ function createSseTranslator(model, completionId, created) {
           if (event.usage) {
             usage = event.usage;
             this.inputTokens = event.usage.inputTokens ?? 0;
-            this.outputTokens = event.usage.outputTokens ?? 0;
+            // || 而非 ??:usage 报 0 但本地已数到内容时保留本地计数(内容优先于零账单)
+            this.outputTokens = event.usage.outputTokens || this.outputTokens;
             this.cachedInputTokens = event.usage.cachedInputTokens ?? 0;
           }
           break;
@@ -107,7 +113,7 @@ function createSseTranslator(model, completionId, created) {
           const u = event.totalUsage || usage || {};
           normalizeUsage(u);
           this.inputTokens = u.inputTokens ?? 0;
-          this.outputTokens = u.outputTokens ?? 0;
+          this.outputTokens = u.outputTokens || this.outputTokens;
           this.cachedInputTokens = u.cachedInputTokens ?? 0;
           const openaiUsage = u ? {
             prompt_tokens: u.inputTokens ?? 0,
@@ -218,6 +224,44 @@ async function handleChatCompletions(req, res) {
   let reader = null;
   let translator = null;
 
+  // 下游断连检测:必须在 await forwardWithRotation **之前**注册 —— close 只发一次,
+  // 客户端若在上游等待期间断开,迟注册的监听器永远收不到事件:上游流会被完整
+  // 读下去(token 照常消耗)、abort 不会触发、断连日志也缺失(/v1/responses 同款时序)。
+  res.on('close', () => {
+    if (res.writableEnded) return; // Normal completion, not a disconnect
+    aborted = true;
+    const reason = lastCcEvent?.startsWith('tool-input') ? 'tool-input-silent-timeout'
+      : lastCcEvent?.includes('delta') ? 'streaming-active-disconnect'
+      : 'client-hangup';
+    abortController.signal.aborted || log('warn', 'Client disconnected', {
+      path: '/v1/chat/completions',
+      model, completionId, reason,
+      streaming: stream,
+      elapsedMs: Date.now() - startTime,
+      bytesSent: bytesReceived,
+      lastCcEvent: lastCcEvent || '(none)',
+      keepaliveCount,
+      inputTokens: translator?.inputTokens ?? 0,
+      outputTokens: translator?.outputTokens ?? 0,
+      cachedInputTokens: translator?.cachedInputTokens ?? 0,
+    });
+    if (!abortController.signal.aborted) {
+      // 断连前抢发 usage=0 终止 chunk，避免下游自行估算 token
+      try {
+        res.write(`data: ${JSON.stringify({
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, prompt_tokens_details: { cached_tokens: 0 } },
+        })}\n\n`);
+        res.write('data: [DONE]\n\n');
+      } catch {}
+      try { abortController.abort(); } catch {}
+    }
+  });
+
   try {
     // 首次初始化（fingerprint + lifecycle）
     const { response: ccResponse, auth: finalAuth } = await forwardWithRotation(auth, req.headers, ccBody, abortController.signal, openaiReq.prompt_cache_key);
@@ -231,42 +275,6 @@ async function handleChatCompletions(req, res) {
       return;
     }
 
-    // 下游断连检测：打断 CC 上游 + 记录日志
-    res.on('close', () => {
-      if (res.writableEnded) return; // Normal completion, not a disconnect
-      aborted = true;
-      const reason = lastCcEvent?.startsWith('tool-input') ? 'tool-input-silent-timeout'
-        : lastCcEvent?.includes('delta') ? 'streaming-active-disconnect'
-        : 'client-hangup';
-      abortController.signal.aborted || log('warn', 'Client disconnected', {
-        path: '/v1/chat/completions',
-        model, completionId, reason,
-        streaming: stream,
-        elapsedMs: Date.now() - startTime,
-        bytesSent: bytesReceived,
-        lastCcEvent: lastCcEvent || '(none)',
-        keepaliveCount,
-        inputTokens: translator?.inputTokens ?? 0,
-        outputTokens: translator?.outputTokens ?? 0,
-        cachedInputTokens: translator?.cachedInputTokens ?? 0,
-      });
-      if (!abortController.signal.aborted) {
-        // 断连前抢发 usage=0 终止 chunk，避免下游自行估算 token
-        try {
-          res.write(`data: ${JSON.stringify({
-            id: completionId,
-            object: 'chat.completion.chunk',
-            created,
-            model,
-            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, prompt_tokens_details: { cached_tokens: 0 } },
-          })}\n\n`);
-          res.write('data: [DONE]\n\n');
-        } catch {}
-        try { abortController.abort(); } catch {}
-      }
-    });
-
     if (stream) {
       // ── 流式响应 ──
       translator = createSseTranslator(model, completionId, created);
@@ -275,6 +283,12 @@ async function handleChatCompletions(req, res) {
       let started = false; // 延迟写 200 header，超时/output=0 时返回 JSON 429/502 让 SDK 自动重试
       const decoder = new TextDecoder();
       reader = ccResponse.body.getReader();
+      const SSE_HEADERS = {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      };
 
       const idle = createIdleWatchdog(STREAM_IDLE_TIMEOUT_MS);
       try {
@@ -300,12 +314,7 @@ async function handleChatCompletions(req, res) {
             const events = translator.parseLine(line);
             if (events) {
               if (!started) {
-                res.writeHead(200, {
-                  'Content-Type': 'text/event-stream',
-                  'Cache-Control': 'no-cache',
-                  'Connection': 'keep-alive',
-                  'X-Accel-Buffering': 'no',
-                });
+                res.writeHead(200, SSE_HEADERS);
                 started = true;
               }
               for (const evt of events) res.write(evt);
@@ -328,7 +337,12 @@ async function handleChatCompletions(req, res) {
           if (buffer.trim()) {
             const events = translator.parseLine(buffer);
             if (events) {
-              if (!started) started = true;
+              // 必须真正写 header:只置 started 标志会让响应以 implicit 200(无
+              // Content-Type)发出,后续 sendJSON 还会因头已发再 writeHead 抛错
+              if (!started) {
+                res.writeHead(200, SSE_HEADERS);
+                started = true;
+              }
               for (const evt of events) res.write(evt);
               await waitDrain(res);
             }
@@ -351,7 +365,9 @@ async function handleChatCompletions(req, res) {
             try { if (!abortController.signal.aborted) abortController.abort(); } catch {}
             if (!started) { sendJSON(res, err.status, err.body); return; }
             try { res.write(`data: ${JSON.stringify(err.body)}\n\n`); } catch {}
-          // 输出 token 为 0 时记为错误，避免下游异常计费
+          // 输出 token 为 0 时记为错误，避免下游异常计费。
+          // 判定依据 = usage 计数与本地内容计数(translator.outputTokens 两者取其一,
+          // 上游漏发 totalUsage 时不再把完整回答误杀成 429,对齐 /v1/messages)
           } else if (translator.outputTokens === 0) {
             try { if (!abortController.signal.aborted) abortController.abort(); } catch {}
             if (!started) {
@@ -361,12 +377,7 @@ async function handleChatCompletions(req, res) {
             try { res.write(`data: ${JSON.stringify({ error: { message: 'Empty response from upstream (zero output tokens)', type: 'rate_limit_error' }, retry_after: 10 })}\n\n`); } catch {}
           } else {
             if (!started) {
-              res.writeHead(200, {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'X-Accel-Buffering': 'no',
-              });
+              res.writeHead(200, SSE_HEADERS);
               started = true;
             }
             res.write(translator.getDoneEvent());
@@ -484,7 +495,7 @@ async function handleChatCompletions(req, res) {
               // 非流式路径会掉进 default 打成 'Unknown CC event type' —— 上游每个响应都会发，
               // 于是线上刷屏。它们本身不携带内容（内容在 text-delta），纯粹是噪音。
               case 'text-start': case 'text-end': case 'start': case 'start-step':
-              case 'reasoning-start': case 'reasoning-end': case 'finish-step':
+              case 'reasoning-start': case 'reasoning-end':
               case 'provider-metadata': case 'tool-input-start': case 'tool-input-delta': case 'tool-input-end':
               case 'tool-error':
                 // Silent - no user-visible content
@@ -526,8 +537,11 @@ async function handleChatCompletions(req, res) {
         return;
       }
 
-      // 输出 token 为 0 时记为错误，避免下游异常计费
-      if ((usage?.outputTokens ?? 0) === 0) {
+      // 零输出判定:内容与 usage 双证据 —— 有任何内容(文本/思考/工具调用)即有效;
+      // 无内容时按 usage 判(上游明确计了输出则放行)。上游偶发不回 totalUsage 时,
+      // 旧逻辑(usage?.outputTokens ?? 0 === 0)会把有完整文本的响应误杀成 429
+      // (对齐 /v1/messages 的按内容判定,同时保留计费信号优先于本地观察的语义)
+      if (!fullText && !reasoningContent && !toolCalls && (usage?.outputTokens ?? 0) === 0) {
         try { if (!abortController.signal.aborted) abortController.abort(); } catch {}
         sendJSON(res, 429, { error: { message: 'Empty response from upstream (zero output tokens)', type: 'rate_limit_error' }, retry_after: 10 });
         return;

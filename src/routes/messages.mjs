@@ -372,6 +372,7 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
             if (!text) break;
             const startBlock = startThinkingBlock();
             currentThinkingText += text;
+            outputTokens += 1; // 纯思考响应(无正文)同样是有效输出,防零输出误判
             yield startBlock + `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: currentBlockIndex, delta: { type: 'thinking_delta', thinking: text } })}\n\n`;
             hadOutput = true;
             break;
@@ -417,7 +418,8 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
             if (u) {
               normalizeUsage(u);
               inputTokens = u.inputTokens ?? inputTokens;
-              outputTokens = u.outputTokens ?? outputTokens;
+              // || 而非 ??:usage 报 0 但本地已数到内容时保留本地计数(内容优先于零账单)
+              outputTokens = u.outputTokens || outputTokens;
               cachedInputTokens = u.cachedInputTokens ?? cachedInputTokens;
               cacheWriteTokens = u.inputTokenDetails?.cacheWriteTokens ?? cacheWriteTokens;
               if (typeof u.inputTokenDetails?.noCacheTokens === 'number') {
@@ -551,6 +553,33 @@ async function handleMessages(req, res) {
   let reader = null;
   let bytesReceived = 0; let lastCcEvent = ''; let fullText = '';
 
+  // 下游断连检测：必须在 await forwardWithRotation **之前**注册 —— close 只发一次,
+  // 客户端若在上游等待期间断开,迟注册的监听器永远收不到事件:abort 不触发、
+  // 上游流被完整读完(token 照常消耗)、断连日志缺失(/v1/responses 同款时序)。
+  res.on('close', () => {
+    if (res.writableEnded) return; // Normal completion, not a disconnect
+    aborted = true;
+    if (!abortController.signal.aborted) {
+      // 断连前抢发 usage=0 终止事件，避免下游自行估算 token
+      try {
+        res.write(`event: message_delta\ndata: ${JSON.stringify({
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { output_tokens: 0, input_tokens: 0, cache_read_input_tokens: 0 },
+        })}\n\n`);
+        res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+      } catch {}
+      try { abortController.abort(); } catch {}
+    }
+    log('warn', 'Client disconnected', {
+      path: '/v1/messages',
+      model,
+      messageId,
+      streaming: stream,
+      elapsedMs: Date.now() - startTime,
+    });
+  });
+
   try {
     // 首次初始化（fingerprint + lifecycle）
     const { response: ccResponse, auth: finalAuth } = await forwardWithRotation(auth, req.headers, ccBody, abortController.signal);
@@ -563,31 +592,6 @@ async function handleMessages(req, res) {
       sendAnthropicError(res, mapped.status, mapped.body.error.type, mapped.body.error.message);
       return;
     }
-
-    // 下游断连检测：打断 CC 上游 + 记录日志
-    res.on('close', () => {
-      if (res.writableEnded) return; // Normal completion, not a disconnect
-      aborted = true;
-      if (!abortController.signal.aborted) {
-        // 断连前抢发 usage=0 终止事件，避免下游自行估算 token
-        try {
-          res.write(`event: message_delta\ndata: ${JSON.stringify({
-            type: 'message_delta',
-            delta: { stop_reason: 'end_turn' },
-            usage: { output_tokens: 0, input_tokens: 0, cache_read_input_tokens: 0 },
-          })}\n\n`);
-          res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
-        } catch {}
-        try { abortController.abort(); } catch {}
-      }
-      log('warn', 'Client disconnected', {
-        path: '/v1/messages',
-        model,
-        messageId,
-        streaming: stream,
-        elapsedMs: Date.now() - startTime,
-      });
-    });
 
     if (stream) {
       // ── 流式 Anthropic SSE ──
@@ -780,7 +784,7 @@ async function handleMessages(req, res) {
               // 非流式路径会掉进 default 打成 'Unknown CC event type' —— 上游每个响应都会发，
               // 于是线上刷屏。它们本身不携带内容（内容在 text-delta），纯粹是噪音。
               case 'text-start': case 'text-end': case 'start': case 'start-step':
-              case 'reasoning-start': case 'reasoning-end': case 'finish-step':
+              case 'reasoning-start': case 'reasoning-end':
               case 'provider-metadata': case 'tool-input-start': case 'tool-input-delta': case 'tool-input-end':
               case 'tool-error':
                 // Silent - no user-visible content
