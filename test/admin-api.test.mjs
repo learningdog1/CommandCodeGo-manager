@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setup } from './helpers.mjs';
 
-test('admin:免 token 访问;跨站 Origin 的修改类请求 403', async () => {
+test('admin:免 token 访问;跨站 Origin 的修改类请求 403,同源 Origin 放行', async () => {
   const s = await setup();
   try {
     assert.equal((await s.proxy.get('/admin/api/overview')).status, 200);
@@ -19,6 +19,20 @@ test('admin:免 token 访问;跨站 Origin 的修改类请求 403', async () => 
     // 跨站 GET 放行(只读)
     const evilGet = await fetch(s.proxy.base + '/admin/api/logs?limit=1', { headers: { Origin: 'http://evil.example.com' } });
     assert.equal(evilGet.status, 200);
+    // 同源 Origin(与请求 Host 一致,局域网管理页的实际形态)写操作放行(issue #2)
+    const sameOrigin = await fetch(s.proxy.base + '/admin/api/upstream-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: s.proxy.base },
+      body: JSON.stringify({ name: 'same-origin', apiKey: 'user_same_origin_1' }),
+    });
+    assert.equal(sameOrigin.status, 201);
+    // 'null' Origin(沙箱 iframe/file://)按跨站处理
+    const nullOrigin = await fetch(s.proxy.base + '/admin/api/upstream-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'null' },
+      body: JSON.stringify({ name: 'x', apiKey: 'user_null_origin_1' }),
+    });
+    assert.equal(nullOrigin.status, 403);
   } finally { await s.close(); }
 });
 
@@ -324,13 +338,26 @@ test('admin:settings 不回显明文 apiKey;保存后 env 覆写不丢;非回环
     assert.equal(s.mock.generateCount(), before + 1, '请求仍打到 env 指定的上游');
   } finally { await s.close(); }
 
-  // ③ host 非回环 → admin API 整体 403(无鉴权管理面不允许裸奔在网络上)
+  // ③ host=0.0.0.0(issue #2 的局域网形态):admin 可用,写操作同源 Origin 放行、跨站 403。
+  //    之前的「非回环整体 403」守卫已按 issue #2 决议改为同源 Origin 校验。
   const s2 = await setup({ env: { HOST: '0.0.0.0' } });
   try {
-    const blocked = await s2.proxy.get('/admin/api/overview');
-    assert.equal(blocked.status, 403);
-    assert.match(JSON.stringify(await blocked.json()), /loopback/);
+    assert.equal((await s2.proxy.get('/admin/api/overview')).status, 200, '非回环 host 下 admin 可读');
+    const write = await fetch(s2.proxy.base + '/admin/api/upstream-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: s2.proxy.base },
+      body: JSON.stringify({ name: 'lan', apiKey: 'user_lan_write_001' }),
+    });
+    assert.equal(write.status, 201, '同源 Origin(局域网管理页形态)写操作放行');
+    const evil = await fetch(s2.proxy.base + '/admin/api/upstream-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://evil.example.com' },
+      body: JSON.stringify({ name: 'x', apiKey: 'user_lan_evil_001' }),
+    });
+    assert.equal(evil.status, 403, '跨站写仍被拒');
     // 业务与探活不受影响
     assert.equal((await s2.proxy.get('/health')).status, 200);
+    // 启动日志含非回环告警(管理面无鉴权对网络开放的事实必须显式喊出来)
+    assert.match(s2.proxy.logs(), /Non-loopback host/);
   } finally { await s2.close(); }
 });

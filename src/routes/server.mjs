@@ -138,6 +138,15 @@ server.listen(CFG.port, CFG.host, () => {
     idleTimeouts: `stream ${STREAM_IDLE_TIMEOUT_MS}ms / nonstream ${NONSTREAM_IDLE_TIMEOUT_MS}ms`,
     maxInflight: MAX_INFLIGHT > 0 ? `${MAX_INFLIGHT} (global, /health exempt)` : 'unlimited (CC_MAX_INFLIGHT=0)',
   });
+  // host 非回环(issue #2 的局域网部署形态):管理 API 无鉴权且随监听地址一起
+  // 对网络开放,必须把这件事显式喊出来,而不是等密钥库被扫到才发现
+  const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+  if (!LOOPBACK_HOSTS.has(String(CFG.host).toLowerCase())) {
+    log('warn', 'Non-loopback host: admin API is unauthenticated and reachable from the network', {
+      host: CFG.host, port: CFG.port,
+      hint: '管理界面与密钥库将对可达此地址的所有客户端开放,仅部署在受信网络;公网暴露请置于反代之后加 TLS 与访问控制',
+    });
+  }
   if (CLIENT_DRAIN_TIMEOUT_MS > 0) {
     log('info', 'Client drain timeout enabled', { timeoutMs: CLIENT_DRAIN_TIMEOUT_MS });
   }
@@ -154,4 +163,12 @@ server.listen(CFG.port, CFG.host, () => {
   if (!CFG.apiKey) {
     log('info', 'No API key in config. API key must be sent in Authorization: Bearer <key> header per request.');
   }
+});
+
+// 监听失败(host 填了本机不存在的地址、端口被抢占等)默认是未处理的 'error'
+// 事件直接崩进程;给出可读的原因再退出(桌面版会把它显示在启动失败弹窗里)
+server.on('error', (e) => {
+  console.error(`[commandcodego-manager] 监听失败:${CFG.host}:${CFG.port}(${e.code ?? e.message})。` +
+    (e.code === 'EADDRNOTAVAIL' ? 'host 配成了本机不存在的地址,检查 config.json 的 host。' : ''));
+  process.exit(1);
 });

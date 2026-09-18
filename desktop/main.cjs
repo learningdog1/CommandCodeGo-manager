@@ -28,36 +28,54 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 // ── 端口:配置首选,占用则向后扫描 ────────────────────────────
+function readConfig() {
+  try { return JSON.parse(readFileSync(path.join(dataDir, 'config.json'), 'utf-8')); }
+  catch { /* 首启无配置 */ }
+  return {};
+}
+
 function readPreferredPort() {
-  try {
-    const cfg = JSON.parse(readFileSync(path.join(dataDir, 'config.json'), 'utf-8'));
-    const p = Number(cfg.port);
-    if (Number.isInteger(p) && p >= 1 && p <= 65535) return p;
-  } catch { /* 首启无配置 */ }
+  const p = Number(readConfig().port);
+  if (Number.isInteger(p) && p >= 1 && p <= 65535) return p;
   return 3050;
 }
 
-function probePort(port) {
+// 监听地址随配置(issue #2):此前无条件注入 HOST=127.0.0.1,把 config.json
+// 里的 host(如 0.0.0.0/局域网 IP)整个覆盖掉,局域网设备永远访问不到。
+function readPreferredHost() {
+  const h = typeof readConfig().host === 'string' ? readConfig().host.trim() : '';
+  return h || '127.0.0.1';
+}
+
+// 管理窗口/探活连接用的地址:通配监听(0.0.0.0/::)含回环,连 127.0.0.1 即可;
+// 绑定到具体 IP 时只能连该 IP;裸 IPv6 字面量要加方括号才能进 URL。
+function uiHostOf(host) {
+  if (host === '0.0.0.0' || host === '::' || host === '[::]') return '127.0.0.1';
+  if (host.includes(':') && !host.startsWith('[')) return `[${host}]`;
+  return host;
+}
+
+function probePort(port, host) {
   return new Promise(resolve => {
     const srv = net.createServer();
     srv.once('error', () => resolve(false));
-    srv.listen(port, '127.0.0.1', () => srv.close(() => resolve(true)));
+    srv.listen(port, host, () => srv.close(() => resolve(true)));
   });
 }
 
-async function pickPort() {
+async function pickPort(host) {
   const base = readPreferredPort();
   for (let p = base; p < base + 20; p++) {
-    if (await probePort(p)) return p;
+    if (await probePort(p, host)) return p;
   }
   throw new Error(`端口 ${base}~${base + 19} 均被占用`);
 }
 
-// ── 服务子进程 ─────────────────────────────────────────────
+// ── 服务子进程 ─────────────────────────────
 let serverChild = null;
 let serverPort = null;
 
-function startServer(port) {
+function startServer(port, host) {
   mkdirSync(dataDir, { recursive: true });
   if (!existsSync(serverBundle)) {
     throw new Error(`未找到服务文件:${serverBundle}(先在项目根执行 npm run bundle 与 npm run build:web)`);
@@ -68,7 +86,7 @@ function startServer(port) {
       // Electron 二进制以纯 Node 模式运行 bundle(内嵌 Node ≥22.5,node:sqlite 可用)
       ELECTRON_RUN_AS_NODE: '1',
       PORT: String(port),
-      HOST: '127.0.0.1',
+      HOST: host, // 跟随 config.json 的 host(此前硬编码 127.0.0.1,见 issue #2)
       CCP_DATA_DIR: dataDir,
       NODE_ENV: 'production',
     },
@@ -87,15 +105,15 @@ function stopServer() {
   if (serverChild) { try { serverChild.kill(); } catch { /* 已退出 */ } serverChild = null; }
 }
 
-async function waitHealthy(port, timeoutMs = 20000) {
+async function waitHealthy(uiHost, port, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (serverChild === null) throw new Error('服务进程意外退出,详见日志');
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/health`);
+      const r = await fetch(`http://${uiHost}:${port}/health`);
       if (r.ok) return true;
     } catch { /* 尚未就绪 */ }
-    // 回环地址上探活极廉价,高频轮询把「就绪→开窗」的空转从最长 250ms 压到 60ms
+    // 探活极廉价,高频轮询把「就绪→开窗」的空转从最长 250ms 压到 60ms
     await new Promise(r => setTimeout(r, 60));
   }
   throw new Error('服务启动超时(/health 未就绪)');
@@ -144,7 +162,7 @@ function createWindow() {
 /** 打开(或复用)窗口并载入管理界面;服务未就绪时先落 splash。
  *  已载入正式页面的存活窗口只做 show/focus,不重复 loadURL(避免整页刷新)。 */
 let appLoaded = false;
-function showWindow(port) {
+function showWindow(uiHost, port) {
   let fresh = false;
   if (win && !win.isDestroyed()) {
     if (!win.isVisible()) win.show();
@@ -156,22 +174,22 @@ function showWindow(port) {
   }
   if (fresh || !appLoaded) {
     appLoaded = true;
-    win.loadURL(`http://127.0.0.1:${port}/`);
+    win.loadURL(`http://${uiHost}:${port}/`);
   }
 }
 
-function createTray(port) {
+function createTray(uiHost, port) {
   if (!existsSync(iconPath)) return;
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
   tray = new Tray(icon);
   tray.setToolTip(PRODUCT);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开管理界面', click: () => showWindow(port) },
-    { label: `服务地址 http://127.0.0.1:${port}`, enabled: false },
+    { label: '打开管理界面', click: () => showWindow(uiHost, port) },
+    { label: `服务地址 http://${uiHost}:${port}`, enabled: false },
     { type: 'separator' },
     { label: '退出', click: () => { app.isQuitting = true; app.quit(); } },
   ]));
-  tray.on('click', () => (win && !win.isDestroyed() ? (win.isVisible() ? win.focus() : win.show()) : showWindow(port)));
+  tray.on('click', () => (win && !win.isDestroyed() ? (win.isVisible() ? win.focus() : win.show()) : showWindow(uiHost, port)));
 }
 
 function setupMenu() {
@@ -215,20 +233,22 @@ async function bootstrap() {
     win.loadURL(SPLASH_URL);
   }
 
-  const port = await pickPort();
+  const host = readPreferredHost();       // 跟随 config.json(issue #2)
+  const uiHost = uiHostOf(host);          // 窗口/探活连接地址(通配 → 127.0.0.1)
+  const port = await pickPort(host);
   serverPort = port;
-  startServer(port);
-  await waitHealthy(port);
+  startServer(port, host);
+  await waitHealthy(uiHost, port);
 
   if (isSmoke) {
-    console.log(`SMOKE-OK port=${port} bundle=${serverBundle}`);
+    console.log(`SMOKE-OK port=${port} host=${host} ui=${uiHost} bundle=${serverBundle}`);
     app.exit(0);
     return;
   }
 
-  createTray(port);
+  createTray(uiHost, port);
   // 窗口可能已被用户关掉(隐藏)甚至销毁,loadURL 前判活
-  if (win && !win.isDestroyed()) { appLoaded = true; win.loadURL(`http://127.0.0.1:${port}/`); }
+  if (win && !win.isDestroyed()) { appLoaded = true; win.loadURL(`http://${uiHost}:${port}/`); }
 }
 
 app.whenReady().then(() => {

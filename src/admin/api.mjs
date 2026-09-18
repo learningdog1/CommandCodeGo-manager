@@ -1,7 +1,8 @@
 // Admin REST API:挂 /admin/api/*,供 Web 管理界面调用。
-// 鉴权:无 token(H1 已取消,管理界面免登录)。安全边界 = 绑定回环地址:
-// host 非回环时本 API 整体 403(密钥库/设置面板不允许裸奔在网络上;
-// CCP_ALLOW_REMOTE_ADMIN=1 可显式豁免、自负其责);浏览器跨站写另由 Origin 校验拦截。
+// 鉴权:无 token(H1 已取消,管理界面免登录)。写操作做**同源 Origin 校验**
+// 挡浏览器跨站请求(CSRF,issue #2):Origin 必须与请求自身的 Host 一致;
+// curl/本机桌面不带 Origin,不受影响。host 配成非回环时管理面随监听地址
+// 一起对网络开放(无鉴权,启动日志有醒目警告)——网络边界由部署者自负。
 import { readFileSync } from 'node:fs';
 import { CFG, saveConfig, configPath, dataDir, defaults, applyEnvOverrides } from '../config.mjs';
 import { log } from '../log.mjs';
@@ -32,32 +33,26 @@ const APP_VERSION = process.env.CCP_APP_VERSION ?? (() => {
 
 const startedAt = Date.now();
 
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
-/** 管理面安全边界:默认仅回环 host 可用 —— admin API 无鉴权,一旦 host 改成
- *  0.0.0.0/局域网地址,密钥库、用量与设置(含改写 apiBase 劫持流量)就对全网敞开。 */
-function isAdminAllowed() {
-  if (process.env.CCP_ALLOW_REMOTE_ADMIN === '1') return true;
-  return LOOPBACK_HOSTS.has(String(CFG.host ?? '').toLowerCase());
-}
-
 export function createAdminApi({ getInflight = () => 0 } = {}) {
   function end(res, status, data) { sendJSON(res, status, data); }
 
   async function handleAdmin(req, res, url) {
     const path = url.pathname.replace(/^\/admin\/api/, '');
 
-    if (!isAdminAllowed()) {
-      return end(res, 403, {
-        error: 'admin API disabled: server host is not loopback (bind 127.0.0.1, or set CCP_ALLOW_REMOTE_ADMIN=1 to accept the risk)',
-      });
-    }
-
-    // 管理界面无 token(H1):此处挡跨站浏览器的修改类请求(CSRF)——
-    // 浏览器跨站请求会带 Origin 头,curl/本机桌面无 Origin 不受影响。
+    // 写操作的 CSRF 防线 = 同源 Origin 校验(issue #2):浏览器跨站请求会带
+    // Origin,与请求自身的 Host 不一致即拒绝;本机桌面与 curl 无 Origin 不受影响;
+    // 局域网用 http://<本机IP>:<port> 打开管理页时 Origin 与 Host 一致,可正常操作。
+    // ('null'/非法 Origin —— 沙箱 iframe、file:// 等 —— 一律按跨站处理)
     const origin = req.headers.origin;
-    if (origin && req.method !== 'GET' && req.method !== 'HEAD'
-      && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(origin)) {
-      return end(res, 403, { error: 'cross-origin write rejected' });
+    if (origin && req.method !== 'GET' && req.method !== 'HEAD') {
+      let sameOrigin = false;
+      try {
+        const requestHost = req.headers.host || 'localhost';
+        sameOrigin = new URL(origin).host === new URL(`http://${requestHost}`).host;
+      } catch { /* 非法 Origin 视为跨站 */ }
+      if (!sameOrigin) {
+        return end(res, 403, { error: 'cross-origin write rejected' });
+      }
     }
 
     // ── 总览 ──
