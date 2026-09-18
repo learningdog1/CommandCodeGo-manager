@@ -58,15 +58,9 @@ function readConfigFile() {
   return cfg;
 }
 
-function loadConfig() {
-  mkdirSync(dataDir, { recursive: true });
-  const cfg = readConfigFile();
-  // 首启:数据目录里没有配置文件时落一份默认值,便于直接编辑
-  if (!existsSync(configPath())) {
-    try { writeFileSync(configPath(), JSON.stringify(defaults(), null, 2) + '\n'); } catch {}
-  }
-
-  // 环境变量覆写
+/** 环境变量覆写(加载时与 PUT /settings 同步运行时 CFG 后各用一次:
+ *  保证「保存配置文件」永远不会盖掉以 env 启动的部署参数)。 */
+function applyEnvOverrides(cfg) {
   if (process.env.PORT) cfg.port = parseInt(process.env.PORT);
   if (process.env.HOST) cfg.host = process.env.HOST;
   if (process.env.CC_API_BASE) cfg.apiBase = process.env.CC_API_BASE;
@@ -79,7 +73,18 @@ function loadConfig() {
   if (process.env.CC_CLI_MODE) cfg.cliMode = process.env.CC_CLI_MODE;
   if (process.env.CC_CLI_SESSION_MODE) cfg.cliSessionMode = process.env.CC_CLI_SESSION_MODE;
   if (process.env.CC_EMPTY_SYSTEM_PLACEHOLDER) cfg.emptySystemPlaceholder = process.env.CC_EMPTY_SYSTEM_PLACEHOLDER !== 'false';
+  return cfg;
+}
 
+function loadConfig() {
+  mkdirSync(dataDir, { recursive: true });
+  const cfg = readConfigFile();
+  // 首启:数据目录里没有配置文件时落一份默认值,便于直接编辑
+  if (!existsSync(configPath())) {
+    try { writeFileSync(configPath(), JSON.stringify(defaults(), null, 2) + '\n'); } catch {}
+  }
+
+  applyEnvOverrides(cfg);
   return cfg;
 }
 
@@ -95,4 +100,4 @@ function saveConfig(patch) {
   return current;
 }
 
-export { CFG, loadConfig, saveConfig, configPath };
+export { CFG, loadConfig, saveConfig, configPath, applyEnvOverrides };

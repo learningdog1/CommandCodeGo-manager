@@ -39,7 +39,7 @@ export async function usageSummary({ from, to, groupBy = 'day' } = {}) {
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const dim = { day: 'day', model: 'model', key: 'key_id' }[groupBy] ?? 'day';
   const sql = `
-    SELECT ${dim === 'key_id' ? 'u.key_id AS key_id, COALESCE(c.name, c.key_prefix, \'(direct)\') AS key_name' : `u.${dim} AS ${dim}`},
+    SELECT ${dim === 'key_id' ? `u.key_id AS key_id, CASE WHEN u.key_id = 0 THEN '(direct)' WHEN c.id IS NOT NULL THEN COALESCE(c.name, c.key_prefix) ELSE '(已删除 key #' || u.key_id || ')' END AS key_name` : `u.${dim} AS ${dim}`},
       SUM(u.input_tokens) AS input_tokens, SUM(u.output_tokens) AS output_tokens,
       SUM(u.cached_tokens) AS cached_tokens, SUM(u.requests) AS requests
     FROM usage_daily u

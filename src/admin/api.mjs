@@ -1,11 +1,9 @@
 // Admin REST API:挂 /admin/api/*,供 Web 管理界面调用。
-// 鉴权:X-Admin-Token 头(sha256 与 config.adminTokenHash 比对);
-// SSE 用一次性 60s 短票据(EventSource 无法带自定义头)。登录失败 5 次锁 60s。
-// 首启无 token 时自动生成,明文只打印一次到控制台,库里只存哈希。
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { CFG, saveConfig, configPath, dataDir, defaults } from '../config.mjs';
+// 鉴权:无 token(H1 已取消,管理界面免登录)。安全边界 = 绑定回环地址:
+// host 非回环时本 API 整体 403(密钥库/设置面板不允许裸奔在网络上;
+// CCP_ALLOW_REMOTE_ADMIN=1 可显式豁免、自负其责);浏览器跨站写另由 Origin 校验拦截。
+import { readFileSync } from 'node:fs';
+import { CFG, saveConfig, configPath, dataDir, defaults, applyEnvOverrides } from '../config.mjs';
 import { log } from '../log.mjs';
 import { readBody } from '../http/body.mjs';
 import { sendJSON } from '../http/respond.mjs';
@@ -25,7 +23,6 @@ import { accountUsageSnapshot, refreshAccountUsage, switchAccount } from '../pro
 import { DEVICE_PROFILE, slugifyProjectPath } from '../protocol/fingerprint.mjs';
 import { MODELS } from '../protocol/models.mjs';
 
-const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 // 版本号:bundle 打包时由 esbuild define 内联(scripts/bundle.mjs);
 // 开发态读根 package.json(相对 import.meta.url),失败退 'unknown'。
 const APP_VERSION = process.env.CCP_APP_VERSION ?? (() => {
@@ -35,14 +32,28 @@ const APP_VERSION = process.env.CCP_APP_VERSION ?? (() => {
 
 const startedAt = Date.now();
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+/** 管理面安全边界:默认仅回环 host 可用 —— admin API 无鉴权,一旦 host 改成
+ *  0.0.0.0/局域网地址,密钥库、用量与设置(含改写 apiBase 劫持流量)就对全网敞开。 */
+function isAdminAllowed() {
+  if (process.env.CCP_ALLOW_REMOTE_ADMIN === '1') return true;
+  return LOOPBACK_HOSTS.has(String(CFG.host ?? '').toLowerCase());
+}
+
 export function createAdminApi({ getInflight = () => 0 } = {}) {
   function end(res, status, data) { sendJSON(res, status, data); }
 
   async function handleAdmin(req, res, url) {
     const path = url.pathname.replace(/^\/admin\/api/, '');
 
-    // 管理界面已取消 token(H1):API 仅监听回环地址;此处挡跨站浏览器的
-    // 修改类请求(CSRF)——浏览器跨站请求会带 Origin 头,curl/本机桌面无 Origin 不受影响。
+    if (!isAdminAllowed()) {
+      return end(res, 403, {
+        error: 'admin API disabled: server host is not loopback (bind 127.0.0.1, or set CCP_ALLOW_REMOTE_ADMIN=1 to accept the risk)',
+      });
+    }
+
+    // 管理界面无 token(H1):此处挡跨站浏览器的修改类请求(CSRF)——
+    // 浏览器跨站请求会带 Origin 头,curl/本机桌面无 Origin 不受影响。
     const origin = req.headers.origin;
     if (origin && req.method !== 'GET' && req.method !== 'HEAD'
       && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(origin)) {
@@ -313,38 +324,32 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
 
     // ── 设置 ──
     if (req.method === 'GET' && path === '/settings') {
-      // 返回「默认值 + 文件层」合并(不含 env 覆写):文件缺键时 UI 仍有兜底值;
-      // adminTokenHash 只报有无
+      // 返回「默认值 + 文件层」合并(不含 env 覆写):文件缺键时 UI 仍有兜底值。
+      // apiKey(兜底上游密钥)与 adminTokenHash 均不回明文/哈希,只报有无 ——
+      // 管理面响应可能进截图与日志,密钥本身没有理由再回显
       let file = {};
       try { file = JSON.parse(readFileSync(configPath(), 'utf-8')); } catch {}
-      const { adminTokenHash, ...rest } = { ...defaults(), ...file };
-      return end(res, 200, { ...rest, hasAdminToken: !!adminTokenHash, dataDir });
+      const { adminTokenHash, apiKey, ...rest } = { ...defaults(), ...file };
+      return end(res, 200, { ...rest, hasApiKey: !!apiKey, hasAdminToken: !!adminTokenHash, dataDir });
     }
     if (req.method === 'PUT' && path === '/settings') {
       const body = await readBody(req).catch(() => null);
       if (!body || typeof body !== 'object') return end(res, 400, { error: 'invalid body' });
       const patch = { ...body };
-      // 哈希只能经 adminToken 明文轮换路径写入,禁止直接传 adminTokenHash 覆盖
+      // 只读派生键与历史遗留键不允许写入(adminTokenHash 从未参与鉴权,H1 后已废弃)
       delete patch.adminTokenHash;
       delete patch.hasAdminToken;
-      const rotated = typeof patch.adminToken === 'string' && patch.adminToken.length >= 16;
-      if (rotated) {
-        patch.adminTokenHash = sha256(patch.adminToken);
-        // 桌面版同步:admin-token.txt 存在即桌面模式,重写为新明文,
-        // 下次启动窗口免登录读到的是新 token(Electron main.cjs 约定)
-        try {
-          const tokenFile = resolve(dataDir, '..', 'admin-token.txt');
-          if (existsSync(tokenFile)) writeFileSync(tokenFile, patch.adminToken + '\n', { mode: 0o600 });
-        } catch (e) {
-          log('warn', 'Admin token file sync failed', { error: e.message });
-        }
-      }
+      delete patch.hasApiKey;
       delete patch.adminToken;
       try {
+        // host/port 只在下次启动生效(不 rebind):与当前生效值比较,实际改动了才提示
+        const restartRequired = ['host', 'port'].filter(k => k in patch && String(patch[k]) !== String(CFG[k]));
         const saved = saveConfig(patch);
-        // 立即生效的运行时键同步进 CFG
+        // 立即生效的运行时键同步进 CFG;随后重放 env 覆写 —— 文件层保存不得覆盖
+        // 以 env 启动的部署参数(CC_API_BASE/PORT 等,否则保存一次设置行为就漂移)
         for (const k of Object.keys(saved)) CFG[k] = saved[k];
-        return end(res, 200, { ok: true, saved: { ...saved, adminTokenHash: undefined } });
+        applyEnvOverrides(CFG);
+        return end(res, 200, { ok: true, restartRequired, saved: { ...saved, adminTokenHash: undefined, apiKey: undefined } });
       } catch (e) {
         return end(res, 500, { error: e.message });
       }

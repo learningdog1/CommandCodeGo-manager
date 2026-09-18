@@ -298,3 +298,39 @@ test('admin:upstream-keys/batch —— 批量粘贴导入(提取/去重/查重/�
     assert.equal((await s.proxy.post('/admin/api/upstream-keys/batch', { text: 'nothing here' })).status, 400, '无密钥 → 400');
   } finally { await s.close(); }
 });
+
+test('admin:settings 不回显明文 apiKey;保存后 env 覆写不丢;非回环 host 整体 403', async () => {
+  // ① GET/PUT 均不得把兜底上游密钥 apiKey 回显出来(只报有无)
+  const s = await setup();
+  try {
+    const putResp = await fetch(s.proxy.base + '/admin/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey: 'user_secret_never_echo', logLevel: 'debug' }),
+    });
+    assert.equal(putResp.status, 200);
+    const putJson = await putResp.json();
+    assert.ok(!JSON.stringify(putJson).includes('user_secret_never_echo'), 'PUT 响应不回显明文');
+    const getJson = await (await s.proxy.get('/admin/api/settings')).json();
+    assert.ok(!('apiKey' in getJson), 'GET 响应不含 apiKey 键');
+    assert.equal(getJson.hasApiKey, true, '只报有无');
+    assert.equal(getJson.logLevel, 'debug', '其余键正常保存');
+
+    // ② 保存设置后 env 覆写仍生效:CC_API_BASE 指向 mock,保存不得把上游切回默认地址
+    const before = s.mock.generateCount();
+    const chat = await s.proxy.post('/v1/chat/completions',
+      { model: 'm', messages: [{ role: 'user', content: 'hi' }] },
+      { Authorization: 'Bearer user_settings_env' });
+    assert.equal(chat.status, 200);
+    assert.equal(s.mock.generateCount(), before + 1, '请求仍打到 env 指定的上游');
+  } finally { await s.close(); }
+
+  // ③ host 非回环 → admin API 整体 403(无鉴权管理面不允许裸奔在网络上)
+  const s2 = await setup({ env: { HOST: '0.0.0.0' } });
+  try {
+    const blocked = await s2.proxy.get('/admin/api/overview');
+    assert.equal(blocked.status, 403);
+    assert.match(JSON.stringify(await blocked.json()), /loopback/);
+    // 业务与探活不受影响
+    assert.equal((await s2.proxy.get('/health')).status, 200);
+  } finally { await s2.close(); }
+});
