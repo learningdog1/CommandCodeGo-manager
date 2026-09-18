@@ -137,12 +137,16 @@ export interface AccountUsageData {
 export interface AccountUsageRow {
   id: number; name: string; status: string;
   fetchedAt: number | null; error: string | null; data: AccountUsageData | null;
+  windowState?: { blocked: boolean; source: 'live' | 'usage' | 'manual' | null; window: string | null; until: number | null };
 }
 
 export const fetchAccountUsage = () => api<{ rows: AccountUsageRow[] }>('/admin/api/account-usage');
 export const refreshAccountUsage = (id?: number) =>
   api<{ rows: AccountUsageRow[]; refreshed: number; failed: number }>('/admin/api/account-usage/refresh',
     { method: 'POST', body: id !== undefined ? { id } : {} });
+export const switchAccount = (id: number, on: boolean) =>
+  api<{ rows: AccountUsageRow[]; switched: 'away' | 'back' }>('/admin/api/account-usage/switch',
+    { method: 'POST', body: { id, on } });
 
 export const fetchOverview = () => api<Overview>('/admin/api/overview');
 export const fetchLogs = (qs = '') => api<{ rows: RequestRow[]; total: number }>(`/admin/api/logs${qs}`);

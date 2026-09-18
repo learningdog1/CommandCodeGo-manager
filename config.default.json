@@ -8,6 +8,6 @@
   "logLevel": "info",
   "useProviderModels": true,
   "modelRefreshIntervalMs": 300000,
-  "accountUsageRefreshMs": 1800000,
+  "accountUsageRefreshMs": 300000,
   "zdr": false
 }

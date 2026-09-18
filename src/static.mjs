@@ -1,11 +1,13 @@
 // 静态托管:服务 public/(Vite 构建产物),带 MIME 与缓存策略。
 // SPA fallback:非 /v1、非 /admin/api 的未知路径回落到 index.html(前端路由)。
 import { createReadStream, statSync } from 'node:fs';
-import { join, extname, normalize } from 'node:path';
+import { join, extname, normalize, sep, basename } from 'node:path';
 import { appDir } from './paths.mjs';
 
-// 静态资源目录 = <运行基目录>/public(与 data 同级;见 src/paths.mjs 说明)
-const PUBLIC_DIR = join(appDir, 'public') + '/';
+// 静态资源目录 = <运行基目录>/public(与 data 同级;见 src/paths.mjs 说明)。
+// 前缀必须用平台分隔符拼接:join() 在 Windows 产出反斜杠,若硬编码拼 '/',
+// 下方 startsWith 防穿越判断会因分隔符混用恒为 false,静态托管整体 404(issue #1)。
+const PUBLIC_DIR = join(appDir, 'public') + sep;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -30,7 +32,8 @@ function sendFile(res, filePath, status = 200) {
   const ext = extname(filePath).toLowerCase();
   const mime = MIME[ext] ?? 'application/octet-stream';
   // 带 hash 的静态资源(如 /assets/index-BwXk3.js)缓存 1 年;index.html 不缓存(SPA 要拿新版本)
-  const immutable = status === 200 && /\.[0-9a-f]{8,}\.(js|css|woff2?|ttf|svg|png)$/i.test(filePath.split('/').pop() ?? '');
+  // basename 也按平台分隔符取段:Windows 上路径含反斜杠,split('/') 取不到文件名
+  const immutable = status === 200 && /\.[0-9a-f]{8,}\.(js|css|woff2?|ttf|svg|png)$/i.test(basename(filePath) ?? '');
   res.writeHead(status, {
     'Content-Type': mime,
     'Cache-Control': filePath.endsWith('index.html') || status !== 200

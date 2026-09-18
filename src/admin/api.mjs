@@ -21,7 +21,7 @@ import { listRequests, summarizeSince } from '../store/requests.mjs';
 import { usageSummary } from '../store/usage.mjs';
 import { driftStatus } from '../protocol/upstream.mjs';
 import { keyStateStore } from '../protocol/keystate.mjs';
-import { accountUsageSnapshot, refreshAccountUsage } from '../protocol/account-usage.mjs';
+import { accountUsageSnapshot, refreshAccountUsage, switchAccount } from '../protocol/account-usage.mjs';
 import { DEVICE_PROFILE, slugifyProjectPath } from '../protocol/fingerprint.mjs';
 import { MODELS } from '../protocol/models.mjs';
 
@@ -124,6 +124,17 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
       const body = await readBody(req).catch(() => null);
       const id = Number(body?.id);
       const r = await refreshAccountUsage(Number.isInteger(id) && id > 0 ? id : null);
+      if (r.notFound) return end(res, 404, { error: 'upstream key not found or disabled' });
+      return end(res, 200, r);
+    }
+    // ── 手动切换账户:标记窗口受限,新请求自动落到其他账户;on=false 恢复 ──
+    if (req.method === 'POST' && path === '/account-usage/switch') {
+      const body = await readBody(req).catch(() => null);
+      const id = Number(body?.id);
+      if (!Number.isInteger(id) || id <= 0 || typeof body?.on !== 'boolean') {
+        return end(res, 400, { error: 'id and on (boolean) are required' });
+      }
+      const r = await switchAccount(id, body.on);
       if (r.notFound) return end(res, 404, { error: 'upstream key not found or disabled' });
       return end(res, 200, r);
     }

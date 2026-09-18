@@ -3,9 +3,9 @@
 // 支持单账号或全部刷新(快照接口纯读服务端缓存),点卡片展开期账全量明细。
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  Activity, CalendarClock, ChevronDown, Coins, Gauge, RefreshCw, Users, Wallet,
+  Activity, ArrowRightLeft, CalendarClock, ChevronDown, Coins, Gauge, RefreshCw, Users, Wallet,
 } from 'lucide-react';
-import { fetchAccountUsage, refreshAccountUsage, type AccountUsageRow, type WindowLimit } from '../api';
+import { fetchAccountUsage, refreshAccountUsage, switchAccount, type AccountUsageRow, type WindowLimit } from '../api';
 import {
   Badge, Button, Card, CardBody, CardHeader, EmptyState, Loading, StatCard, toast, fmtAgo, fmtInt,
 } from '../ui';
@@ -126,6 +126,17 @@ export function AccountUsage() {
     return () => clearInterval(t);
   }, []);
 
+  // 60s 轮询快照:服务端定时刷新(默认 5 分钟)+ 429 实时标记都会更新缓存,
+  // 前端跟着拉,面板数字不再滞留到手动刷新(本页保活常驻,轮询一直有效)
+  useEffect(() => {
+    const t = setInterval(() => {
+      void fetchAccountUsage()
+        .then(d => setRows(prev => prev ? d.rows ?? prev : d.rows ?? []))
+        .catch(() => { /* 轮询静默失败 */ });
+    }, 60_000);
+    return () => clearInterval(t);
+  }, []);
+
   const mergeRows = useCallback((incoming: AccountUsageRow[]) => {
     const byId = new Map(incoming.map(r => [r.id, r]));
     setRows(prev => (prev ?? []).map(r => byId.get(r.id) ?? r));
@@ -157,6 +168,18 @@ export function AccountUsage() {
       toast('err', `刷新失败:${(e as Error).message}`);
     } finally {
       setRefreshing(prev => { const s = new Set(prev); s.delete(id); return s; });
+    }
+  }, [mergeRows]);
+
+  // 手动切换账户:标记窗口受限 → 新请求自动落到其他账户;再点一次恢复
+  const toggleSwitch = useCallback(async (r: AccountUsageRow) => {
+    const on = !r.windowState?.blocked;
+    try {
+      const res = await switchAccount(r.id, on);
+      mergeRows(res.rows ?? []);
+      toast('ok', on ? `已切换:${r.name} 的新请求将路由到其他账户` : `已恢复:${r.name} 重新参与路由`);
+    } catch (e) {
+      toast('err', `切换失败:${(e as Error).message}`);
     }
   }, [mergeRows]);
 
@@ -253,6 +276,12 @@ export function AccountUsage() {
                               ? <Badge>已停用</Badge>
                               : !d ? (r.error ? <Badge kind="err">拉取失败</Badge> : <Badge>未刷新</Badge>)
                               : r.error ? <Badge kind="warn">部分失败</Badge> : null}
+                            {r.windowState?.blocked && !disabled && (
+                              <Badge kind={r.windowState.source === 'manual' ? 'accent' : 'warn'}>
+                                {r.windowState.source === 'manual' ? '已手动切换' : '窗口受限·自动轮转中'}
+                                {r.windowState.until ? ` · ${fmtDuration(r.windowState.until - now)}后恢复` : ''}
+                              </Badge>
+                            )}
                             {d?.plan && (
                               <Badge kind={d.plan.status === 'active' ? 'accent' : 'default'}>{d.plan.name ?? d.plan.id ?? '未知套餐'}</Badge>
                             )}
@@ -268,13 +297,26 @@ export function AccountUsage() {
                           </div>
                         </div>
                       </div>
-                      <button
-                        onClick={() => { if (!disabled) void refreshOne(r.id); }}
-                        disabled={disabled || refreshing.has(r.id)}
-                        title={disabled ? '已停用账号不可刷新' : '刷新此账号'}
-                        className="shrink-0 rounded-lg border border-line p-1.5 text-txt3 transition-all duration-150 hover:border-line2 hover:text-accent active:scale-90 disabled:cursor-not-allowed disabled:opacity-40">
-                        <RefreshCw size={14} className={refreshing.has(r.id) ? 'animate-spin' : ''} />
-                      </button>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {!disabled && (
+                          <Button size="sm"
+                            variant={r.windowState?.blocked ? 'primary' : 'default'}
+                            onClick={() => void toggleSwitch(r)}
+                            title={r.windowState?.blocked
+                              ? '恢复:该账户重新参与请求路由'
+                              : '切换账户:新请求自动路由到其他账户,窗口重置或手动恢复前不再使用它'}>
+                            <ArrowRightLeft size={13} />
+                            {r.windowState?.blocked ? '恢复' : '切换'}
+                          </Button>
+                        )}
+                        <button
+                          onClick={() => { if (!disabled) void refreshOne(r.id); }}
+                          disabled={disabled || refreshing.has(r.id)}
+                          title={disabled ? '已停用账号不可刷新' : '刷新此账号'}
+                          className="shrink-0 rounded-lg border border-line p-1.5 text-txt3 transition-all duration-150 hover:border-line2 hover:text-accent active:scale-90 disabled:cursor-not-allowed disabled:opacity-40">
+                          <RefreshCw size={14} className={refreshing.has(r.id) ? 'animate-spin' : ''} />
+                        </button>
+                      </div>
                     </div>
 
                     {r.error && (

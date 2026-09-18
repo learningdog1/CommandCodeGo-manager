@@ -11,6 +11,7 @@ import { log } from '../log.mjs';
 import { CC_VERSION } from './upstream.mjs';
 import { slugifyProjectPath, DEVICE_PROFILE } from './fingerprint.mjs';
 import { listUpstreamKeys, getUpstreamKeyById } from '../store/keys.mjs';
+import { syncFromWindowLimits, getWindowState, setManualSwitch } from './window-state.mjs';
 
 // 套餐 → 月度信用总额(CLI 的 Xn 表):月度模板条的上限从这里来。
 // credits 接口只报剩余;未知套餐(上游新档位)时 total=null,前端退化为只显示剩余。
@@ -138,6 +139,8 @@ function rowOf(key, entry) {
     fetchedAt: entry?.fetchedAt ?? null,
     error: entry?.error ?? null,
     data: entry?.data ?? null,
+    // 运行时窗口状态(轮转/手动切换的依据):live=请求侧 429 标记,usage=刷新同步,manual=手动切换
+    windowState: getWindowState(key.id),
   };
 }
 
@@ -155,6 +158,8 @@ async function refreshKey(key) {
       log('warn', 'Account usage refresh failed', { keyId: key.id, error: e.message });
     }
     cache.set(key.id, entry);
+    // 窗口状态与用量数据同步:到顶 → 标记到 resetAt;已释放 → 清除(live 标记随之收敛)
+    syncFromWindowLimits(key.id, entry.data?.windowLimits ?? null);
     return entry;
   })();
   inflight.set(key.id, p);
@@ -200,6 +205,27 @@ export async function refreshAccountUsage(id) {
     });
   }
   return { rows, refreshed, failed };
+}
+
+/**
+ * 手动切换账户(管理界面):on=true 把该账户的 5h/周窗口标记为受限(优先取已知的
+ * resetAt,至少 1 小时),新请求自动落到其他未受限账户;on=false 立即恢复。
+ * 返回更新后的行;账户不存在/已停用返回 { notFound: true }。
+ */
+export async function switchAccount(id, on) {
+  const key = await getUpstreamKeyById(id);
+  if (!key) return { notFound: true };
+  if (on) {
+    const w = cache.get(id)?.data?.windowLimits;
+    const reset = Math.max(
+      w?.fiveHour?.resetAt ?? 0,
+      w?.weekly?.resetAt ?? 0,
+    );
+    setManualSwitch(id, true, reset > Date.now() ? reset : 0);
+  } else {
+    setManualSwitch(id, false);
+  }
+  return { rows: [rowOf(key, cache.get(id))], switched: on ? 'away' : 'back' };
 }
 
 // ── 自动定时刷新 ───────────────────────────────────────────
