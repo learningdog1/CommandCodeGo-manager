@@ -44,6 +44,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export function Dashboard() {
   const [ov, setOv] = useState<Overview | null>(null);
   const [rows, setRows] = useState<RequestRow[] | null>(null); // null = 加载中
+  const [logsTotal, setLogsTotal] = useState(0); // 服务端 total(行数据被 limit 截断,计数不能取 rows.length)
   const [logsFailed, setLogsFailed] = useState(false);
   const [recentPage, setRecentPage] = useState(1); // 最近请求分页(今日数据前端切片)
 
@@ -65,7 +66,7 @@ export function Dashboard() {
       try {
         const start = new Date(); start.setHours(0, 0, 0, 0);
         const d = await fetchLogs(`?from=${start.getTime()}&limit=500`);
-        if (alive) { setRows(d.rows); setLogsFailed(false); }
+        if (alive) { setRows(d.rows); setLogsTotal(d.total); setLogsFailed(false); }
       } catch (e) {
         if (alive) {
           setRows([]); setLogsFailed(true);
@@ -182,7 +183,9 @@ export function Dashboard() {
       {/* ── 最近请求 + 服务状态 ── */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader title="最近请求" extra={<span className="tnum text-xs text-txt3">今日共 {fmtInt(rows?.length ?? 0)} 条</span>} />
+          <CardHeader title="最近请求" extra={<span className="tnum text-xs text-txt3">
+            今日共 {fmtInt(logsTotal)} 条{logsTotal > (rows?.length ?? 0) ? `(展示最近 ${fmtInt(rows?.length ?? 0)})` : ''}
+          </span>} />
           {logsFailed ? (
             <EmptyState title="请求列表加载失败" hint="请确认代理服务可达后刷新页面重试。" />
           ) : !rows ? (

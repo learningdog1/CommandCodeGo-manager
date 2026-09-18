@@ -70,20 +70,21 @@ export function Fingerprint() {
   const [info, setInfo] = useState<FingerprintsInfo | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
-    setBusy(true);
+  // silent=true 供 30s 后台轮询:不驱动按钮转圈、失败不弹 toast(只静默保数据新鲜)
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setBusy(true);
     try {
       setInfo(await fetchFingerprints());
     } catch (e) {
-      toast('err', `加载指纹状态失败:${(e as Error).message}`);
+      if (!silent) toast('err', `加载指纹状态失败:${(e as Error).message}`);
     } finally {
-      setBusy(false);
+      if (!silent) setBusy(false);
     }
   }, []);
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), 30_000); // 状态轻量,30s 轮询足够"活"
+    const timer = setInterval(() => void load(true), 30_000); // 状态轻量,30s 轮询足够"活"
     return () => clearInterval(timer);
   }, [load]);
 

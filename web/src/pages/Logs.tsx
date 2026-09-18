@@ -163,7 +163,11 @@ export function Logs() {
   useEffect(() => { pageRef.current = page; }, [page]);
 
   // ── 历史加载(过滤条件/页码变化时重新拉取;服务端分页 limit/offset) ──
+  // 序号守卫:快速切换筛选/翻页时,只认最后一次发起的响应 —— 旧的慢响应
+  // 后到会覆盖新数据(表格与筛选错位、total 错乱),过期响应一律丢弃
+  const loadSeqRef = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true); setErr('');
     try {
       const qs = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE) });
@@ -171,16 +175,25 @@ export function Logs() {
       if (status) qs.set('status', status);
       if (keyId) qs.set('keyId', keyId);
       const d = await fetchLogs(`?${qs.toString()}`);
+      if (seq !== loadSeqRef.current) return;
       setRows(d.rows); setTotal(d.total);
     } catch (e) {
+      if (seq !== loadSeqRef.current) return;
       setErr((e as Error).message || '加载失败');
       toast('err', '加载请求日志失败');
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [endpoint, status, keyId, page]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // 页码 clamp:后台按保留期清理日志会让 total 收缩,停在高页码会困在空页
+  // (分页控件在 totalPages<=1 时整体消失,没有路回去),这里自动退回末页
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (page > totalPages) setPage(totalPages);
+  }, [total, page]);
 
   // 客户端 key 下拉数据
   useEffect(() => {
@@ -201,7 +214,7 @@ export function Logs() {
       const es = new EventSource('/admin/api/logs/stream');
       esRef.current = es;
       es.onmessage = ev => {
-        if (!liveRef.current) return; // 暂停时仍接收但不处理,重开即恢复
+        if (!liveRef.current) return; // 暂停期间丢弃(恢复实时时统一补拉,见 toggleLive)
         try {
           const row = normalize(JSON.parse(ev.data) as Record<string, unknown>);
           if (!matchRef.current(row)) return;
@@ -234,10 +247,13 @@ export function Logs() {
     };
   }, [connect]);
 
-  const toggleLive = () => setLive(v => {
-    liveRef.current = !v;
-    return !v;
-  });
+  const toggleLive = () => {
+    const next = !live;
+    liveRef.current = next;
+    setLive(next);
+    // 恢复实时:补拉暂停窗口内错过的行,total 计数也一并归位
+    if (next) void load();
+  };
 
   const clearFilters = () => { setEndpoint(''); setStatus(''); setKeyId(''); setPage(1); };
   // 行展开/收起(LogRow memo 的稳定回调,避免每次渲染生成新函数打散 memo)

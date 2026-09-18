@@ -148,6 +148,9 @@ export function Models() {
       await load();
     } catch (e) {
       toast('err', `刷新失败:${(e as Error).message}`);
+    } finally {
+      // 失败也必须复位:否则按钮永久转圈禁用,只能离开页面重进
+      setBusy(false);
     }
   }, [load]);
 

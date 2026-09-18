@@ -2,7 +2,7 @@
 // 覆盖 CRUD、探活、启停切换与创建结果的一次性 token 展示。
 import { useCallback, useEffect, useState } from 'react';
 import { Repeat, Terminal } from 'lucide-react';
-import { api, batchImportUpstreamKeys, fetchClientKeys, fetchUpstreamKeys, type ClientKey, type UpstreamKey } from '../api';
+import { ApiError, api, batchImportUpstreamKeys, fetchClientKeys, fetchUpstreamKeys, type ClientKey, type UpstreamKey } from '../api';
 import {
   Badge, Button, Card, CardHeader, Dialog, EmptyState, Field, Input, Loading, Select,
   Table, Tabs, Td, Th, inputCls, toast, fmtAgo, fmtTime,
@@ -158,11 +158,16 @@ function UpstreamPanel({ rows, clients, reload }: {
       setDelTarget(null);
       await reload();
     } catch (err) {
-      const ae = err as Error & { status?: number };
+      const ae = err as ApiError;
       if (ae.status === 409) {
-        // 409 {error:'bound_client_keys', bound:N} —— ApiError 丢掉了 bound,从当前客户端列表取数
-        const bound = clients?.filter(c => c.upstream_key_id === delTarget.id).length ?? 0;
-        setDelErr(`该密钥仍绑定着 ${bound} 个客户端密钥,请先解绑后再删除。`);
+        // 409 {error:'bound_client_keys', bound:N} —— 优先取服务端返回的 bound;
+        // 响应体缺失再从本地客户端列表数,列表也没加载成功时不要编造 "0 个"
+        const bound = typeof (ae.body as { bound?: number } | undefined)?.bound === 'number'
+          ? (ae.body as { bound: number }).bound
+          : clients?.filter(c => c.upstream_key_id === delTarget.id).length ?? null;
+        setDelErr(bound == null
+          ? '该密钥仍绑定着客户端密钥,请先解绑(或改绑)后再删除。'
+          : `该密钥仍绑定着 ${bound} 个客户端密钥,请先解绑后再删除。`);
       } else {
         setDelErr(ae.message || '删除失败');
       }

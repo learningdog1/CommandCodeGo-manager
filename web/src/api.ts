@@ -4,9 +4,12 @@
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** 服务端错误体原样保留(如 409 删除冲突的 {error, bound}),调用方免二次取数 */
+  body: unknown;
+  constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -19,8 +22,9 @@ export async function api<T = unknown>(path: string, opts: { method?: string; bo
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     let msg = text;
-    try { msg = JSON.parse(text).error ?? text; } catch { /* 保留原文 */ }
-    throw new ApiError(String(msg) || `HTTP ${res.status}`, res.status);
+    let body: unknown;
+    try { const j = JSON.parse(text); msg = j.error ?? text; body = j; } catch { /* 保留原文 */ }
+    throw new ApiError(String(msg) || `HTTP ${res.status}`, res.status, body);
   }
   return res.json() as Promise<T>;
 }
@@ -158,7 +162,7 @@ export const batchImportUpstreamKeys = (text: string) =>
 export const fetchClientKeys = () => api<{ rows: ClientKey[] }>('/admin/api/client-keys');
 export const fetchSettings = () => api<Settings>('/admin/api/settings');
 export const putSettings = (patch: Partial<Settings>) =>
-  api<{ ok: boolean }>('/admin/api/settings', { method: 'PUT', body: patch });
+  api<{ ok: boolean; restartRequired?: string[] }>('/admin/api/settings', { method: 'PUT', body: patch });
 export const refreshModels = () =>
   api<{ source: 'upstream' | 'builtin'; count: number; reason?: string }>('/admin/api/models/refresh', { method: 'POST' });
 export const fetchFingerprints = () => api<FingerprintsInfo>('/admin/api/fingerprints');

@@ -137,8 +137,10 @@ export function Settings() {
       if (form.apiBase.trim()) patch.apiBase = form.apiBase.trim();
       if (form.projectSlug.trim()) patch.projectSlug = form.projectSlug.trim();
       if (form.logFile.trim()) patch.logFile = form.logFile.trim();
-      await putSettings(patch);
-      toast('ok', '已保存,重启服务后生效');
+      const r = await putSettings(patch);
+      toast('ok', r.restartRequired?.length
+        ? `已保存;${r.restartRequired.join(' / ')} 需重启服务后生效`
+        : '已保存,即时生效');
     } catch (e) {
       toast('err', `保存失败:${(e as Error).message}`);
     } finally {

@@ -172,16 +172,21 @@ export function AccountUsage() {
   }, [mergeRows]);
 
   // 手动切换账户:标记窗口受限 → 新请求自动落到其他账户;再点一次恢复
+  const [switchingId, setSwitchingId] = useState<number | null>(null);
   const toggleSwitch = useCallback(async (r: AccountUsageRow) => {
+    if (switchingId != null) return; // 防抖:慢响应下双击会连发两次,第二次反转第一次
     const on = !r.windowState?.blocked;
+    setSwitchingId(r.id);
     try {
       const res = await switchAccount(r.id, on);
       mergeRows(res.rows ?? []);
       toast('ok', on ? `已切换:${r.name} 的新请求将路由到其他账户` : `已恢复:${r.name} 重新参与路由`);
     } catch (e) {
       toast('err', `切换失败:${(e as Error).message}`);
+    } finally {
+      setSwitchingId(null);
     }
-  }, [mergeRows]);
+  }, [mergeRows, switchingId]);
 
   // 初次进入:先读快照;存在启用账号但缓存全空时,自动触发一次全部刷新
   useEffect(() => {
@@ -301,6 +306,8 @@ export function AccountUsage() {
                         {!disabled && (
                           <Button size="sm"
                             variant={r.windowState?.blocked ? 'primary' : 'default'}
+                            loading={switchingId === r.id}
+                            disabled={switchingId != null && switchingId !== r.id}
                             onClick={() => void toggleSwitch(r)}
                             title={r.windowState?.blocked
                               ? '恢复:该账户重新参与请求路由'
