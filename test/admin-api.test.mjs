@@ -214,3 +214,39 @@ test('admin:cc-cli —— 未安装 CLI 时 installed=false,导入 404', async (
     assert.equal(imp.status, 404);
   } finally { await s.close(); }
 });
+
+test('admin:日志状态分组过滤(2xx/4xx/5xx)+ 分页 offset', async () => {
+  // 前两笔 200,第三笔 500:分组过滤的行集与 total 必须一致(分页前提)
+  let genCount = 0;
+  const s = await setup({
+    onRequest: (req, res) => {
+      if (req.url === '/alpha/generate') {
+        const n = ++genCount;
+        res.writeHead(n <= 2 ? 200 : 500, { 'Content-Type': 'text/event-stream' });
+        res.end('{"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":1}}\n');
+        return false;
+      }
+      return;
+    },
+  });
+  try {
+    for (let i = 0; i < 3; i++) {
+      await s.proxy.post('/v1/chat/completions',
+        { model: 'm', messages: [{ role: 'user', content: 'hi' }] },
+        { Authorization: 'Bearer user_group_filter' });
+    }
+    const all = await (await s.proxy.get('/admin/api/logs?limit=10')).json();
+    assert.equal(all.total, 3);
+    const okOnly = await (await s.proxy.get('/admin/api/logs?status=2xx&limit=10')).json();
+    assert.equal(okOnly.total, 2, '2xx 分组 total');
+    assert.ok(okOnly.rows.every(r => r.status_code >= 200 && r.status_code < 300));
+    const errOnly = await (await s.proxy.get('/admin/api/logs?status=5xx&limit=10')).json();
+    assert.equal(errOnly.total, 1);
+    assert.equal(errOnly.rows[0].status_code, 502, '上游 500 经代理映射为 502,仍在 5xx 分组');
+    const exact = await (await s.proxy.get('/admin/api/logs?status=200&limit=10')).json();
+    assert.equal(exact.total, 2, '精确值过滤不受分组支持影响');
+    const page2 = await (await s.proxy.get('/admin/api/logs?limit=2&offset=2')).json();
+    assert.equal(page2.total, 3);
+    assert.equal(page2.rows.length, 1, 'offset 分页');
+  } finally { await s.close(); }
+});

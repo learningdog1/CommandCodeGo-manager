@@ -37,7 +37,20 @@ export async function listRequests(filter = {}) {
   const where = [];
   const args = [];
   if (filter.endpoint) { where.push('endpoint = ?'); args.push(filter.endpoint); }
-  if (filter.statusCode) { where.push('status_code = ?'); args.push(filter.statusCode); }
+  // 状态过滤:精确值(200/401…)或分组(2xx/4xx/5xx)——分组下放服务端,
+  // 分页 total 才与过滤后的行集一致(此前前端分组过滤会让页码失真)。
+  if (filter.statusCode) {
+    const sc = String(filter.statusCode);
+    const g = /^([2-5])xx$/.exec(sc);
+    if (g) {
+      const lo = Number(g[1]) * 100;
+      where.push('status_code >= ? AND status_code <= ?');
+      args.push(lo, lo + 99);
+    } else {
+      where.push('status_code = ?');
+      args.push(Number(sc));
+    }
+  }
   if (filter.keyId) { where.push('upstream_key_id = ?'); args.push(filter.keyId); }
   if (filter.fromTs) { where.push('ts >= ?'); args.push(filter.fromTs); }
   if (filter.toTs) { where.push('ts <= ?'); args.push(filter.toTs); }

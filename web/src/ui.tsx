@@ -96,10 +96,11 @@ const STAT_TONES: Record<string, { grad: string; num: string }> = {
   amber:  { grad: 'from-amber-400 to-amber-500',     num: 'text-warn' },
   ok:     { grad: 'from-emerald-500 to-emerald-600', num: 'text-ok' },
 };
-export function StatCard({ label, value, unit, icon, tone = 'brand', status }: {
+export function StatCard({ label, value, unit, icon, tone = 'brand', status, sub }: {
   label: string; value: React.ReactNode; unit?: string; icon?: React.ReactNode;
   tone?: 'brand' | 'sky' | 'violet' | 'rose' | 'amber' | 'ok';
   status?: 'ok' | 'warn' | 'err';
+  sub?: React.ReactNode; // 数值下方的补充说明行(两个页面共用的扩展)
 }) {
   const t = STAT_TONES[tone] ?? STAT_TONES.brand;
   const statusColor = status === 'warn' ? 'text-warn' : status === 'err' ? 'text-err' : status === 'ok' ? 'text-ok' : '';
@@ -118,6 +119,7 @@ export function StatCard({ label, value, unit, icon, tone = 'brand', status }: {
         <div className={`tnum truncate text-[22px] font-bold leading-7 tracking-tight ${statusColor || t.num}`}>
           {value}
         </div>
+        {sub && <div className="tnum mt-0.5 truncate text-[11px] text-txt3">{sub}</div>}
       </div>
     </Card>
   );
@@ -148,6 +150,50 @@ export function Th({ className = '', children }: { className?: string; children?
 }
 export function Td({ className = '', children }: { className?: string; children?: React.ReactNode }) {
   return <td className={`border-b border-line/50 px-3 py-2.5 align-middle ${className}`}>{children}</td>;
+}
+
+// ── Pagination(日志/总览最近请求共用;服务端或前端切片分页) ──
+// 页码窗口:总页数 ≤7 全显;否则始终含首尾页,当前页±1,余下用省略号折叠。
+function pageWindow(current: number, totalPages: number): (number | '…l' | '…r')[] {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+  const out: (number | '…l' | '…r')[] = [1];
+  const start = Math.max(2, current - 1);
+  const end = Math.min(totalPages - 1, current + 1);
+  if (start > 2) out.push('…l');
+  for (let p = start; p <= end; p++) out.push(p);
+  if (end < totalPages - 1) out.push('…r');
+  out.push(totalPages);
+  return out;
+}
+export function Pagination({ page, total, pageSize, onChange, unit = '条' }: {
+  page: number; total: number; pageSize: number; onChange: (p: number) => void; unit?: string;
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if (totalPages <= 1) return null;
+  const nums = pageWindow(page, totalPages);
+  const btn = (label: React.ReactNode, target: number, disabled: boolean, key: string) => (
+    <button key={key} onClick={() => !disabled && onChange(target)} disabled={disabled}
+      className={`flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs transition-all duration-150 active:scale-95 disabled:cursor-not-allowed disabled:opacity-35 ${
+        disabled ? 'text-txt3' : 'text-txt2 hover:bg-panel2 hover:text-txt'}`}>
+      {label}
+    </button>
+  );
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5">
+      <span className="tnum text-xs text-txt3">共 {fmtInt(total)} {unit} · 第 {page} / {totalPages} 页</span>
+      <div className="flex items-center gap-0.5">
+        {btn('‹', page - 1, page <= 1, 'prev')}
+        {nums.map(n => n === '…l' || n === '…r'
+          ? <span key={n} className="px-1 text-xs text-txt3">…</span>
+          : <button key={n} onClick={() => onChange(n)}
+              className={`h-7 min-w-7 rounded-md px-2 text-xs transition-all duration-150 active:scale-95 ${
+                n === page ? 'bg-accent-dim font-semibold text-accent' : 'text-txt2 hover:bg-panel2 hover:text-txt'}`}>
+              {n}
+            </button>)}
+        {btn('›', page + 1, page >= totalPages, 'next')}
+      </div>
+    </div>
+  );
 }
 
 // ── Input / Select ────────────────────────────────────────

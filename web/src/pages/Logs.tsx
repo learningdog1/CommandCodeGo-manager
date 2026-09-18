@@ -2,7 +2,7 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchClientKeys, fetchLogs, type ClientKey, type RequestRow } from '../api';
 import {
-  Badge, Button, Card, CardBody, CardHeader, EmptyState, Loading, Select,
+  Badge, Button, Card, CardHeader, EmptyState, Loading, Pagination, Select,
   Table, Td, Th, toast, fmtInt, fmtK, fmtMs, fmtTime,
 } from '../ui';
 
@@ -17,7 +17,8 @@ const STATUS_OPTIONS = [
   { value: '429', label: '429' },
   { value: '502', label: '502' },
 ];
-const MAX_ROWS = 500;
+const MAX_ROWS = 500;      // SSE 实时尾随的状态上限(渲染只出当前页)
+const PAGE_SIZE = 50;      // 分页每页条数(DOM 上限,侧栏切换卡顿的主因就是无分页时整表渲染)
 
 function statusKind(code: number | null): 'ok' | 'warn' | 'err' | 'default' {
   if (code == null) return 'default';
@@ -121,13 +122,22 @@ export function Logs() {
   const [keys, setKeys] = useState<ClientKey[]>([]);
   const [rows, setRows] = useState<RequestRow[]>([]);
   const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [live, setLive] = useState(true);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
-  const statusExact = ['200', '401', '429', '502'].includes(status) ? status : '';
-  const statusGroup = ['2xx', '4xx', '5xx'].includes(status) ? status : '';
+  // 状态过滤值:精确(200/401…)或分组(2xx/4xx/5xx)都直传服务端,
+  // 分页 total 与过滤后的行集一致;SSE 实时行在客户端按同口径匹配。
+  const statusMatch = useCallback((r: RequestRow) => {
+    if (!status) return true;
+    const c = r.status_code;
+    if (c == null) return false;
+    if (/^\d{3}$/.test(status)) return c === Number(status);
+    const lo = Number(status[0]) * 100;
+    return c >= lo && c <= lo + 99;
+  }, [status]);
 
   // keyId 过滤:后端按 upstream_key_id 匹配,故取客户端 key 映射的上游 key id(去重)
   const keyOptions = useMemo(() => {
@@ -142,22 +152,23 @@ export function Logs() {
   }, [keys]);
 
   const matchFilter = useCallback((r: RequestRow) =>
-    (!endpoint || r.endpoint === endpoint) &&
-    (!statusExact || r.status_code === Number(statusExact)) &&
+    (!endpoint || r.endpoint === endpoint) && statusMatch(r) &&
     (!keyId || r.upstream_key_id === Number(keyId))
-  , [endpoint, statusExact, keyId]);
+  , [endpoint, statusMatch, keyId]);
 
-  // onmessage 闭包里读最新过滤条件
+  // onmessage 闭包里读最新过滤条件与页码
   const matchRef = useRef(matchFilter);
   useEffect(() => { matchRef.current = matchFilter; }, [matchFilter]);
+  const pageRef = useRef(page);
+  useEffect(() => { pageRef.current = page; }, [page]);
 
-  // ── 历史加载(过滤条件变化时重新拉取) ──
+  // ── 历史加载(过滤条件/页码变化时重新拉取;服务端分页 limit/offset) ──
   const load = useCallback(async () => {
     setLoading(true); setErr('');
     try {
-      const qs = new URLSearchParams({ limit: '200' });
+      const qs = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE) });
       if (endpoint) qs.set('endpoint', endpoint);
-      if (statusExact) qs.set('status', statusExact);
+      if (status) qs.set('status', status);
       if (keyId) qs.set('keyId', keyId);
       const d = await fetchLogs(`?${qs.toString()}`);
       setRows(d.rows); setTotal(d.total);
@@ -167,7 +178,7 @@ export function Logs() {
     } finally {
       setLoading(false);
     }
-  }, [endpoint, statusExact, keyId]);
+  }, [endpoint, status, keyId, page]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -194,6 +205,9 @@ export function Logs() {
         try {
           const row = normalize(JSON.parse(ev.data) as Record<string, unknown>);
           if (!matchRef.current(row)) return;
+          // 只在第 1 页前插实时行:翻页中前插会把当前页内容整体顶走。
+          // 离开第 1 页期间的事件只累计 total,回第 1 页时 load() 会重新拉取。
+          if (pageRef.current !== 1) { setTotal(n => n + 1); return; }
           setRows(prev => [row, ...prev].slice(0, MAX_ROWS));
           setTotal(n => n + 1);
         } catch { /* 忽略坏帧 */ }
@@ -225,36 +239,27 @@ export function Logs() {
     return !v;
   });
 
-  const clearFilters = () => { setEndpoint(''); setStatus(''); setKeyId(''); };
+  const clearFilters = () => { setEndpoint(''); setStatus(''); setKeyId(''); setPage(1); };
   // 行展开/收起(LogRow memo 的稳定回调,避免每次渲染生成新函数打散 memo)
   const toggleRow = useCallback((id: number) => setExpandedId(prev => (prev === id ? null : id)), []);
-
-  // 2xx/4xx/5xx 分组过滤在前端生效
-  const visible = statusGroup
-    ? rows.filter(r => {
-        const c = r.status_code;
-        if (c == null) return false;
-        return statusGroup === '5xx' ? c >= 500 : statusGroup === '4xx' ? c >= 400 && c < 500 : c >= 200 && c < 300;
-      })
-    : rows;
 
   return (
     <div className="space-y-5">
       {/* ── 过滤栏 + 实时开关 ── */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="w-48">
-          <Select value={endpoint} onChange={e => setEndpoint(e.target.value)}>
+          <Select value={endpoint} onChange={e => { setEndpoint(e.target.value); setPage(1); }}>
             <option value="">全部端点</option>
             {ENDPOINTS.map(ep => <option key={ep} value={ep}>{ep}</option>)}
           </Select>
         </div>
         <div className="w-44">
-          <Select value={status} onChange={e => setStatus(e.target.value)}>
+          <Select value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
             {STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </Select>
         </div>
         <div className="w-48">
-          <Select value={keyId} onChange={e => setKeyId(e.target.value)}>
+          <Select value={keyId} onChange={e => { setKeyId(e.target.value); setPage(1); }}>
             <option value="">全部 Key</option>
             {keyOptions.map(k => <option key={k.id} value={String(k.id)}>{k.label}</option>)}
           </Select>
@@ -272,27 +277,30 @@ export function Logs() {
       <Card>
         <CardHeader
           title="请求日志"
-          extra={<span className="tnum text-xs text-txt3">共 {fmtInt(total)} 条{statusGroup ? '(分组过滤后见下)' : ''}</span>} />
+          extra={<span className="tnum text-xs text-txt3">共 {fmtInt(total)} 条</span>} />
         {err && !loading ? (
           <EmptyState title="日志加载失败" hint={`${err} —— 请确认代理服务可达后重试。`} />
         ) : loading ? (
           <Loading>加载请求日志…</Loading>
-        ) : visible.length === 0 ? (
+        ) : rows.length === 0 ? (
           <EmptyState title="暂无请求" hint="当前过滤条件下没有请求记录,实时请求会自动出现在这里。" />
         ) : (
-          <Table>
-            <thead>
-              <tr>
-                <Th>时间</Th><Th>端点</Th><Th>Key</Th><Th>模型</Th><Th>状态</Th><Th>流式</Th>
-                <Th>耗时</Th><Th>tokens (in/out)</Th><Th>finish</Th><Th>错误</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map(r => (
-                <LogRow key={r.id} r={r} expanded={expandedId === r.id} onToggle={toggleRow} />
-              ))}
-            </tbody>
-          </Table>
+          <>
+            <Table>
+              <thead>
+                <tr>
+                  <Th>时间</Th><Th>端点</Th><Th>Key</Th><Th>模型</Th><Th>状态</Th><Th>流式</Th>
+                  <Th>耗时</Th><Th>tokens (in/out)</Th><Th>finish</Th><Th>错误</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <LogRow key={r.id} r={r} expanded={expandedId === r.id} onToggle={toggleRow} />
+                ))}
+              </tbody>
+            </Table>
+            <Pagination page={page} total={total} pageSize={PAGE_SIZE} onChange={setPage} />
+          </>
         )}
       </Card>
     </div>

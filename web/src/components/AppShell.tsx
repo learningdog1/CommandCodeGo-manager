@@ -48,10 +48,10 @@ function fmtUptime(sec: number): string {
   return `${Math.floor(sec / 86400)}d${Math.floor((sec % 86400) / 3600)}h`;
 }
 
-// 监控三页(总览/日志/用量)保活:切换导航只切 display,不卸载重挂载。
-// 这三页挂载成本高(重新拉数据 + ECharts 重建 + SSE 重连),来回切换时
+// 监控四页(总览/日志/用量/账号用量)保活:切换导航只切 display,不卸载重挂载。
+// 这几页挂载成本高(重新拉数据 + ECharts 重建 + SSE 重连),来回切换时
 // 重建正是卡顿主因;保活后切换接近零成本,且日志页离开时仍实时接收。
-const KEEP_ALIVE_PATHS = ['/', '/logs', '/usage'];
+const KEEP_ALIVE_PATHS = ['/', '/logs', '/usage', '/accounts'];
 
 function KeepAliveOutlet() {
   const location = useLocation();

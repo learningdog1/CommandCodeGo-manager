@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Activity, AlertTriangle, Coins, KeyRound, Radio, Timer } from 'lucide-react';
 import { fetchLogs, fetchOverview, type Overview, type RequestRow } from '../api';
 import {
-  Badge, Card, CardBody, CardHeader, EChart, echartsBase, EmptyState, Loading, vgrad,
+  Badge, Card, CardBody, CardHeader, EChart, echartsBase, EmptyState, Loading, Pagination, vgrad,
   Skeleton, StatCard, Table, Td, Th, toast, themeColor, useTheme, fmtInt, fmtK, fmtMs, fmtTime,
 } from '../ui';
 
@@ -45,6 +45,7 @@ export function Dashboard() {
   const [ov, setOv] = useState<Overview | null>(null);
   const [rows, setRows] = useState<RequestRow[] | null>(null); // null = 加载中
   const [logsFailed, setLogsFailed] = useState(false);
+  const [recentPage, setRecentPage] = useState(1); // 最近请求分页(今日数据前端切片)
 
   // overview 每 10s 轮询(失败静默,下轮重试)
   useEffect(() => {
@@ -181,7 +182,7 @@ export function Dashboard() {
       {/* ── 最近请求 + 服务状态 ── */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader title="最近请求" extra={<span className="text-xs text-txt3">最新 10 条</span>} />
+          <CardHeader title="最近请求" extra={<span className="tnum text-xs text-txt3">今日共 {fmtInt(rows?.length ?? 0)} 条</span>} />
           {logsFailed ? (
             <EmptyState title="请求列表加载失败" hint="请确认代理服务可达后刷新页面重试。" />
           ) : !rows ? (
@@ -189,25 +190,28 @@ export function Dashboard() {
           ) : rows.length === 0 ? (
             <EmptyState title="暂无请求" hint="今日还没有任何代理请求记录。" />
           ) : (
-            <Table>
-              <thead>
-                <tr>
-                  <Th>时间</Th><Th>端点</Th><Th>模型</Th><Th>状态</Th><Th>耗时</Th><Th className="text-right">tokens</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.slice(0, 10).map(r => (
-                  <tr key={r.id} className="transition-colors hover:bg-panel2/60">
-                    <Td className="tnum whitespace-nowrap text-xs text-txt2">{fmtTime(r.ts)}</Td>
-                    <Td className="font-mono text-xs">{r.endpoint || '—'}</Td>
-                    <Td className="max-w-36 truncate text-xs">{r.model ?? '—'}</Td>
-                    <Td className="whitespace-nowrap"><StatusBadge code={r.status_code} /></Td>
-                    <Td className="tnum text-xs">{fmtMs(r.duration_ms)}</Td>
-                    <Td className="tnum text-right text-xs">{fmtK((r.input_tokens ?? 0) + (r.output_tokens ?? 0) + (r.cached_tokens ?? 0))}</Td>
+            <>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>时间</Th><Th>端点</Th><Th>模型</Th><Th>状态</Th><Th>耗时</Th><Th className="text-right">tokens</Th>
                   </tr>
-                ))}
-              </tbody>
-            </Table>
+                </thead>
+                <tbody>
+                  {rows.slice((recentPage - 1) * 10, recentPage * 10).map(r => (
+                    <tr key={r.id} className="transition-colors hover:bg-panel2/60">
+                      <Td className="tnum whitespace-nowrap text-xs text-txt2">{fmtTime(r.ts)}</Td>
+                      <Td className="font-mono text-xs">{r.endpoint || '—'}</Td>
+                      <Td className="max-w-36 truncate text-xs">{r.model ?? '—'}</Td>
+                      <Td className="whitespace-nowrap"><StatusBadge code={r.status_code} /></Td>
+                      <Td className="tnum text-xs">{fmtMs(r.duration_ms)}</Td>
+                      <Td className="tnum text-right text-xs">{fmtK((r.input_tokens ?? 0) + (r.output_tokens ?? 0) + (r.cached_tokens ?? 0))}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+              <Pagination page={recentPage} total={rows.length} pageSize={10} onChange={setRecentPage} />
+            </>
           )}
         </Card>
 
