@@ -12,7 +12,7 @@ RUN npm run build
 FROM node:22-alpine
 WORKDIR /app
 ENV HOST=0.0.0.0 PORT=3050 CCP_DATA_DIR=/app/data
-COPY server.mjs config.default.json ./
+COPY server.mjs config.default.json package.json ./
 COPY src/ ./src/
 COPY --from=webbuild /app/public ./public
 VOLUME ["/app/data"]

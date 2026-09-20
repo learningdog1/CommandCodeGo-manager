@@ -26,7 +26,7 @@ import { DEVICE_PROFILE, slugifyProjectPath } from '../protocol/fingerprint.mjs'
 import { MODELS } from '../protocol/models.mjs';
 
 // 版本号:bundle 打包时由 esbuild define 内联(scripts/bundle.mjs);
-// 开发态读根 package.json(相对 import.meta.url),失败退 'unknown'。
+// 开发态与容器运行态读根 package.json(Dockerfile 已将其拷入 /app),失败退 'unknown'。
 const APP_VERSION = process.env.CCP_APP_VERSION ?? (() => {
   try { return JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf-8')).version; }
   catch { return 'unknown'; }
