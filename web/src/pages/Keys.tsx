@@ -5,7 +5,7 @@ import { Repeat, Terminal } from 'lucide-react';
 import { ApiError, api, batchImportUpstreamKeys, fetchClientKeys, fetchUpstreamKeys, type ClientKey, type UpstreamKey } from '../api';
 import {
   Badge, Button, Card, CardHeader, Dialog, EmptyState, Field, Input, Loading, Select,
-  Table, Tabs, Td, Th, inputCls, toast, fmtAgo, fmtTime,
+  Table, Tabs, Td, Th, copyText, inputCls, toast, fmtAgo, fmtTime,
 } from '../ui';
 
 // 与后端同款校验:/^user_[a-zA-Z0-9_-]+$/
@@ -15,28 +15,6 @@ function StatusBadge({ status }: { status: string }) {
   if (status === 'active') return <Badge kind="ok">启用</Badge>;
   if (status === 'exhausted') return <Badge kind="warn">额度耗尽</Badge>;
   return <Badge>停用</Badge>;
-}
-
-// 剪贴板写入(非安全上下文降级 execCommand)
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand('copy');
-      ta.remove();
-      return ok;
-    } catch {
-      return false;
-    }
-  }
 }
 
 // ── 上游密钥 Tab ───────────────────────────────────────────

@@ -3,12 +3,12 @@
 // 厂商分组默认折叠(点厂商名展开,头部直接给该组参考成本),搜索/筛选时自动展开。
 // 成本为估算值(官方价目 × 本地 token 计量),实际扣费以账号信用为准。
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { Boxes, ChevronDown, Coins, RefreshCw, Search, Sigma, UnfoldVertical, Zap } from 'lucide-react';
+import { Boxes, ChevronDown, Coins, Download, RefreshCw, Search, Sigma, UnfoldVertical, Zap } from 'lucide-react';
 import { fetchUsage, refreshModels, type ModelItem, type UsageRow } from '../api';
 import { CATALOG_BY_ID } from '../model-catalog';
 import {
   Badge, Button, Card, EmptyState, Input, Loading, StatCard, Tabs,
-  fmtInt, fmtK, toast,
+  copyText, fmtInt, fmtK, toast,
 } from '../ui';
 
 const PLAN_LABEL: Record<string, string> = { go: 'Go', pro: 'Pro', goat: 'GOAT', max: 'Max', team: 'Teams' };
@@ -35,11 +35,23 @@ function estCost(cat: { priceIn: number; priceOut: number; cacheRead: number }, 
   return nonCacheIn / 1e6 * cat.priceIn + u.cached / 1e6 * cat.cacheRead + u.output / 1e6 * cat.priceOut;
 }
 
-function copyId(id: string) {
-  if (!navigator.clipboard) { toast('err', '复制失败:剪贴板不可用'); return; }
-  navigator.clipboard.writeText(id)
-    .then(() => toast('ok', '已复制'))
-    .catch(() => toast('err', '复制失败'));
+// 点击复制模型 id:copyText 自带非安全上下文(HTTP 访问)降级;
+// 连 execCommand 都被禁时兜底提示走导出清单
+async function copyId(id: string) {
+  const ok = await copyText(id);
+  if (ok) toast('ok', '已复制');
+  else toast('err', '复制失败:剪贴板不可用,可点「导出清单」获取模型 id');
+}
+
+// 导出全部模型 id 为 txt(一行一个):不依赖剪贴板,任何部署环境可用
+function exportIds(models: ModelItem[]) {
+  const blob = new Blob([models.map(m => m.id).join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'models.txt';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // 单个模型行:名称/plan + 单价 + 30 天用量 + 参考成本。
@@ -245,6 +257,11 @@ export function Models() {
           </Button>
         )}
         <Button onClick={() => void refresh()} loading={busy}><RefreshCw size={14} />一键刷新</Button>
+        {models && models.length > 0 && (
+          <Button size="sm" variant="ghost" onClick={() => exportIds(models)} title="下载全部模型 id 清单(txt,一行一个)——剪贴板不可用时的替代">
+            <Download size={13} />导出清单
+          </Button>
+        )}
         {models && (
           <span className="tnum ml-auto text-xs text-txt3">
             {query.trim() || view === 'used' ? `匹配 ${matched} / ${models.length} 个模型` : `共 ${fmtInt(models.length)} 个模型 · ${groups.length} 个厂商`}
