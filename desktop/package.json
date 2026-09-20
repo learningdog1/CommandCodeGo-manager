@@ -1,7 +1,7 @@
 {
   "name": "commandcodego-manager-desktop",
   "productName": "CommandCodeGo Manager",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Command Code 订阅反代桌面版(服务 + 管理界面)",
   "private": true,
   "main": "main.cjs",
