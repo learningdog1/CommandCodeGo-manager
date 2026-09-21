@@ -1,4 +1,4 @@
-// 模型价格目录:由 command-code@1.56.0 官方知识库 reference/models.md 解析生成
+// 模型价格目录:由 command-code@1.58.1 官方知识库 reference/models.md 解析生成
 // (单价为官方公开价目,$/1M tokens,输入/输出/缓存读,部分厂商另计缓存写)。
 // 生成方式:一次性脚本解析 markdown 表格;上游价目更新时需重新生成。
 // plan 为该模型要求的最低套餐(官方排序 Go < GOAT < Pro < Max)。
@@ -172,6 +172,22 @@ export const MODEL_CATALOG: CatalogEntry[] = [
     cacheWrite: null,
     plan: 'go',
     bestFor: 'fast, affordable GLM coding with 1M context'
+  },
+  {
+    id: 'z-ai/glm-5.3-flashx',
+    name: 'GLM-5.3 FlashX',
+    context: '1M',
+    efforts: [
+      'low',
+      'high',
+      'max'
+    ],
+    priceIn: 0.37,
+    priceOut: 1.25,
+    cacheRead: 0.075,
+    cacheWrite: null,
+    plan: 'go',
+    bestFor: 'high-speed GLM-5.3 Flash with 1M context'
   },
   {
     id: 'zai-org/GLM-5.3',
@@ -445,13 +461,13 @@ export const MODEL_CATALOG: CatalogEntry[] = [
     bestFor: 'agentic coding & reasoning'
   },
   {
-    id: 'meituan/LongCat-2.0:free',
+    id: 'meituan/LongCat-2.0',
     name: 'LongCat 2.0',
     context: '1.05M',
     efforts: null,
-    priceIn: 0,
-    priceOut: 0,
-    cacheRead: 0,
+    priceIn: 0.3,
+    priceOut: 1.2,
+    cacheRead: 0.006,
     cacheWrite: null,
     plan: 'go',
     bestFor: 'trillion-parameter agentic coding with 1M context'
