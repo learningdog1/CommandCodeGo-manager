@@ -13,7 +13,7 @@ import { forwardWithRotation } from '../protocol/rotation.mjs';
 import { STREAM_IDLE_TIMEOUT_MS, NONSTREAM_IDLE_TIMEOUT_MS } from '../limits.mjs';
 import { log, summarizeUpstreamError } from '../log.mjs';
 import {
-  normalizeUsage, mapFinishReason, incompleteUpstreamDetail, incompleteUpstreamError,
+  normalizeUsage, eventFinishReason, mapFinishReason, incompleteUpstreamDetail, incompleteUpstreamError,
   mapCcError, mapCcEventError, forwardToCC, TIMEOUT_REDUCE_CONTEXT_THRESHOLD, timeoutStats,
 } from '../protocol/upstream.mjs';
 import { nowUnix } from '../util.mjs';
@@ -377,7 +377,8 @@ function createResponsesSseTranslator(model, responseId, created) {
           sawFinish = true;
           // 必须归一化：截断类不止 'length'（还有 max_output_tokens /
           // model_context_window_exceeded），原来直接比对原始值会漏判成 completed。
-          finishReason = event.finishReason ? mapFinishReason(event.finishReason) : null;
+          // 读 rawFinishReason ?? finishReason；空值 → null，由 incomplete 判定兜底（issue #5）。
+          finishReason = mapFinishReason(eventFinishReason(event, { path: '/v1/responses' }));
           const u = event.totalUsage || event.usage || null;
           if (u) {
             normalizeUsage(u);
@@ -632,7 +633,7 @@ async function handleResponses(req, res) {
       let fullText = '';
       let thinkingText = '';
       let usage = null;
-      let finishReason = 'stop';
+      let finishReason = null; // finish 事件没给原因时保持 null → incomplete 判定兜底(issue #5)
       let sawFinish = false;
       let upstreamError = null;
       t.provider = () => ({ usage: usage || {}, finishReason });
@@ -668,7 +669,11 @@ async function handleResponses(req, res) {
             case 'finish':
               lastCcEvent = event.type;
               sawFinish = true;
-              finishReason = mapFinishReason(event.finishReason || 'stop');
+              {
+                // rawFinishReason ?? finishReason,且空值不再折成 stop(issue #5)
+                const r = mapFinishReason(eventFinishReason(event, { path: '/v1/responses' }));
+                if (r) finishReason = r;
+              }
               if (event.totalUsage || event.usage) usage = event.totalUsage || event.usage;
               break;
             case 'error':

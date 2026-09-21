@@ -12,7 +12,7 @@ import { forwardWithRotation } from '../protocol/rotation.mjs';
 import { STREAM_IDLE_TIMEOUT_MS, NONSTREAM_IDLE_TIMEOUT_MS, CLIENT_DRAIN_TIMEOUT_MS } from '../limits.mjs';
 import { log, summarizeUpstreamError } from '../log.mjs';
 import {
-  normalizeUsage, mapFinishReason, toOpenAIFinishReason, incompleteUpstreamDetail, incompleteUpstreamError,
+  normalizeUsage, eventFinishReason, mapFinishReason, toOpenAIFinishReason, incompleteUpstreamDetail, incompleteUpstreamError,
   mapCcError, mapCcEventError, forwardToCC, TIMEOUT_REDUCE_CONTEXT_THRESHOLD, timeoutStats,
 } from '../protocol/upstream.mjs';
 import { nowUnix } from '../util.mjs';
@@ -96,7 +96,9 @@ function createSseTranslator(model, completionId, created) {
 
         case 'finish-step': {
           sawFinish = true;
-          if (event.finishReason) finishReason = mapFinishReason(event.finishReason);
+          // 读 rawFinishReason ?? finishReason（issue #5）：网络失败族只出现在 raw 字段里
+          const rs = mapFinishReason(eventFinishReason(event, { path: '/v1/chat/completions' }));
+          if (rs) finishReason = rs;
           if (event.usage) {
             usage = event.usage;
             this.inputTokens = event.usage.inputTokens ?? 0;
@@ -109,7 +111,8 @@ function createSseTranslator(model, completionId, created) {
 
         case 'finish': {
           sawFinish = true;
-          const fr = toOpenAIFinishReason(finishReason || mapFinishReason(event.finishReason || 'stop'));
+          const rf = mapFinishReason(eventFinishReason(event, { path: '/v1/chat/completions' }));
+          if (rf) finishReason = rf;
           const u = event.totalUsage || usage || {};
           normalizeUsage(u);
           this.inputTokens = u.inputTokens ?? 0;
@@ -121,7 +124,11 @@ function createSseTranslator(model, completionId, created) {
             total_tokens: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
             prompt_tokens_details: { cached_tokens: u.cachedInputTokens ?? 0 },
           } : undefined;
-          out.push(makeChunk(completionId, created, model, {}, fr, openaiUsage));
+          // 上游宣告 finish 却没给原因时不发终态 chunk —— 补 stop 就是谎报完成
+          // （issue #5），交给流末尾的 incomplete 判定发可重试的 502。
+          if (finishReason) {
+            out.push(makeChunk(completionId, created, model, {}, toOpenAIFinishReason(finishReason), openaiUsage));
+          }
           break;
         }
 
@@ -438,7 +445,7 @@ async function handleChatCompletions(req, res) {
     } else {
       // ── 非流式响应（缓冲完整 NDJSON）──
       let reasoningContent = '';
-      let finishReason = 'stop';
+      let finishReason = null; // finish 事件没给原因时保持 null → incomplete 判定兜底(issue #5)
       let sawFinish = false;
       let usage = null;
       let toolCalls = null;
@@ -476,7 +483,11 @@ async function handleChatCompletions(req, res) {
               case 'finish':
                 lastCcEvent = event.type;
                 sawFinish = true;
-                finishReason = mapFinishReason(event.finishReason || 'stop');
+                {
+                  // rawFinishReason ?? finishReason,且空值不再折成 stop(issue #5)
+                  const r = mapFinishReason(eventFinishReason(event, { path: '/v1/chat/completions' }));
+                  if (r) finishReason = r;
+                }
                 if (event.totalUsage) usage = event.totalUsage;
                 break;
               case 'error':

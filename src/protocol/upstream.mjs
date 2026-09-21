@@ -84,6 +84,34 @@ function anthropicInputTokens(usage, noCacheOverride) {
   return Math.max(0, (u.inputTokens || 0) - cacheRead - cacheWrite);
 }
 
+// 从 finish / finish-step 事件里取「有效的完成原因」，对齐 CLI 的读法：
+//   s = rawFinishReason ?? finishReason          （command-code@1.53.1 起即如此，1.58.1 未变）
+// 两条补充规则（同样来自 CLI 的 runAiSdkStream）：
+//   · finishReason === 'other' 且没有 rawFinishReason → 视为「没有有效完成信号」（CLI 报 502 截断）
+//   · 网络失败族(network/connection/upstream error)只会出现在 rawFinishReason 里 ——
+//     只读 finishReason 会把它漏成「正常结束」，正是 issue #5「只有思考、无正文无工具调用」的根因。
+// 真机抓包佐证：正常结束的 finish 事件总是同时显式携带两者
+// （如 {"finishReason":"stop","rawFinishReason":"stop"} 或 tool-calls / tool_calls），
+// 因此「两个字段都为空」在上游 wire 上不是合法的正常结束，按不完整处理是安全的。
+function eventFinishReason(event, ctx) {
+  const raw = event?.rawFinishReason;
+  const fin = event?.finishReason;
+  const rawEmpty = raw === undefined || raw === null || String(raw).trim() === '';
+  if (rawEmpty && fin === 'other') return '';
+  const v = rawEmpty ? fin : raw;
+  if (v === undefined || v === null || String(v).trim() === '') {
+    // issue #5 建议的原始日志：finish 宣告了完成却没说为什么，必须留痕才能与上游对账。
+    // 只记标量字段 —— finish 事件可能带巨大的 providerMetadata/gateway 路由块。
+    log('warn', 'Finish event without a finish reason', {
+      path: ctx?.path, eventType: event?.type,
+      finishReason: fin ?? null, rawFinishReason: raw ?? null,
+      hasTotalUsage: !!(event?.totalUsage || event?.usage),
+    });
+    return '';
+  }
+  return String(v);
+}
+
 // 上游 finishReason → 本代理内部规范化取值。
 // 对齐 CLI 的 normalizeStopReason2 / isNetworkFailureFinish（command-code@1.54.0）：
 //   tool_use | tool-calls | tool_calls                    → tool_calls
@@ -94,9 +122,12 @@ function anthropicInputTokens(usage, noCacheOverride) {
 // 关键点：'length' 家族**不止 'length' 一个值**。max_output_tokens 与
 // model_context_window_exceeded 都是「输出被截断」，折成 stop/end_turn 等于
 // 把半截回答谎报成完整回答。未知值一律原样返回，宁可让它露出来也不要静默折成 stop。
+// 空值（上游宣告 finish 却没给原因）返回 null —— 折成 'stop' 正是 issue #5 反对的
+// 「谎报完成」；null 会被 incompleteUpstreamDetail 判为可重试的 502，下游有机会重试。
+// 入参应传 eventFinishReason(event) 的结果，而不是裸的 event.finishReason。
 function mapFinishReason(reason) {
   const r = String(reason ?? '').trim().toLowerCase();
-  if (!r) return 'stop';
+  if (!r) return null;
   if (r === 'tool-calls' || r === 'tool_calls' || r === 'tool_use') return 'tool_calls';
   if (r === 'length' || r === 'max_tokens'
       || r === 'max_output_tokens' || r === 'model_context_window_exceeded') return 'length';
@@ -117,6 +148,10 @@ function mapFinishReason(reason) {
 function incompleteUpstreamDetail(sawFinish, finishReason) {
   if (!sawFinish) return 'no finish event';
   if (finishReason === 'upstream_error') return 'provider reported an upstream connection failure';
+  // finish 事件存在但没说为什么结束（两字段皆空 / 'other' 且无 raw，见 eventFinishReason）：
+  // CLI 把它当成 "no finish event" 同族的截断处理；谎报 stop 会让下游拿到
+  // 「只有思考、无正文无工具调用」的空回复还以为这轮正常完成（issue #5）。
+  if (!finishReason) return 'finish event without a finish reason';
   return null;
 }
 
@@ -173,6 +208,23 @@ function mapCcError(ccStatus, ccBody) {
       code,
       body: {
         error: { message, type: 'rate_limit_error', ...(code ? { code } : {}) },
+        retry_after: 30,
+      },
+    };
+  }
+
+  // 402（配额/计费窗口耗尽）保持 429 的退避语义，但必须在 message 里说清这不是
+  // 瞬时限流 —— 只按状态码退避的下游会无限空转（issue #5 的独立观察）。
+  if (ccStatus === 402) {
+    return {
+      status: 429,
+      code,
+      body: {
+        error: {
+          message: `${message}${code ? ` (code: ${code})` : ''} — quota or billing window exhausted (payment required upstream), not a transient rate limit; retrying the same key will not help until the window resets`,
+          type: 'rate_limit_error',
+          ...(code ? { code } : {}),
+        },
         retry_after: 30,
       },
     };
@@ -266,7 +318,7 @@ export {
   CC_PROTOCOL_VERSION, CC_VERSION, CC_VERSION_REFRESH_MS, checkProtocolDrift,
   timeoutStats, TIMEOUT_REDUCE_CONTEXT_THRESHOLD,
   generateTraceparent,
-  normalizeUsage, anthropicInputTokens, mapFinishReason, toOpenAIFinishReason,
+  normalizeUsage, anthropicInputTokens, eventFinishReason, mapFinishReason, toOpenAIFinishReason,
   incompleteUpstreamDetail, incompleteUpstreamError,
   CC_STATUS_MAP, mapCcError, mapCcEventError,
   forwardToCC,

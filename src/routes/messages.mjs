@@ -14,7 +14,7 @@ import { forwardWithRotation } from '../protocol/rotation.mjs';
 import { STREAM_IDLE_TIMEOUT_MS, NONSTREAM_IDLE_TIMEOUT_MS } from '../limits.mjs';
 import { log, summarizeUpstreamError } from '../log.mjs';
 import {
-  normalizeUsage, anthropicInputTokens, mapFinishReason, toOpenAIFinishReason,
+  normalizeUsage, anthropicInputTokens, eventFinishReason, mapFinishReason, toOpenAIFinishReason,
   incompleteUpstreamDetail, incompleteUpstreamError,
   mapCcError, mapCcEventError, forwardToCC, TIMEOUT_REDUCE_CONTEXT_THRESHOLD, timeoutStats,
 } from '../protocol/upstream.mjs';
@@ -409,9 +409,12 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
             // 上游的 finishReason 是 'tool-calls'（连字符），必须先过 mapFinishReason 规范化成
             // 'tool_calls'，否则会掉进 mapAnthropicStopReason 的 default 变成 end_turn。
             // 真机实测踩到过：工具调用成功但 stop_reason 报 end_turn。
+            // 读 rawFinishReason ?? finishReason（issue #5）：网络失败族只在 raw 字段里；
+            // 空值不折 stop，留给 incompleteUpstreamDetail 兜底成可重试 502。
             sawFinish = true;   // finish-step 与 finish 都算完成信号
-            if (event.finishReason) {
-              finishNorm = mapFinishReason(event.finishReason);
+            const r = mapFinishReason(eventFinishReason(event, { path: '/v1/messages' }));
+            if (r) {
+              finishNorm = r;
               stopReason = mapAnthropicStopReason(finishNorm);
             }
             const u = event.totalUsage || event.usage;
@@ -727,7 +730,7 @@ async function handleMessages(req, res) {
     } else {
       // ── 非流式 Anthropic JSON ──
       const messageId = 'msg_' + randomUUID().slice(0, 12);
-      let finishReason = 'stop';
+      let finishReason = null; // finish 事件没给原因时保持 null → incomplete 判定兜底(issue #5)
       let sawFinish = false;
       let usage = null;
       let toolCalls = null;
@@ -765,7 +768,11 @@ async function handleMessages(req, res) {
               case 'finish':
                 lastCcEvent = event.type;
                 sawFinish = true;
-                finishReason = mapFinishReason(event.finishReason || 'stop');
+                {
+                  // rawFinishReason ?? finishReason,且空值不再折成 stop(issue #5)
+                  const r = mapFinishReason(eventFinishReason(event, { path: '/v1/messages' }));
+                  if (r) finishReason = r;
+                }
                 if (event.totalUsage || event.usage) usage = event.totalUsage || event.usage;
                 break;
               case 'error':
