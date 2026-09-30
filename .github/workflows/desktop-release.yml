@@ -75,6 +75,8 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # docker-release 与本工作流同 tag 并发,谁先建 Release 不确定;
+      # create 撞「tag 已存在」时降级为向已有 Release 补传资产(v0.2.10 实测踩过)
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,4 +86,6 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            artifacts/*.dmg artifacts/*.exe artifacts/*-mac.zip
+            artifacts/*.dmg artifacts/*.exe artifacts/*-mac.zip \
+          || gh release upload "${GITHUB_REF_NAME}" \
+            artifacts/*.dmg artifacts/*.exe artifacts/*-mac.zip --clobber
