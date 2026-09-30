@@ -51,7 +51,10 @@ async function usageGet(path, params, apiKey) {
       'x-command-code-version': CC_VERSION,
       'x-project-slug': slugifyProjectPath(DEVICE_PROFILE.projectDir),
     },
-    signal: AbortSignal.timeout(10_000),
+    // /alpha 计费四件套走的是上游业务后端而非边缘缓存,上游繁忙时实测 TTFB 15s+
+    // (2026-09-30 抓包:whoami 15.4s / subscriptions 15.2s,均正常返回 200)。
+    // 10s 会把「慢但成功」误杀成全端点超时(管理页「部分失败」黄条),放宽到 30s。
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
