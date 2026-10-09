@@ -12,6 +12,7 @@ import { CC_VERSION } from './upstream.mjs';
 import { slugifyProjectPath, DEVICE_PROFILE } from './fingerprint.mjs';
 import { listUpstreamKeys, getUpstreamKeyById, renameUpstreamKey } from '../store/keys.mjs';
 import { syncFromWindowLimits, getWindowState, setManualSwitch } from './window-state.mjs';
+import { selectUpstreamKey } from '../auth.mjs';
 
 // 账户展示名:commandcode 账户名(userName)优先,退回邮箱前缀,再退回通用默认。
 // 导入与存量迁移都用它命名上游 key,避免一排「CommandCode CLI 登录」分不清谁是谁。
@@ -243,7 +244,11 @@ export async function refreshAccountUsage(id) {
 export async function switchAccount(id, on) {
   const key = await getUpstreamKeyById(id);
   if (!key) return { notFound: true };
+  let nextAccount = null;
   if (on) {
+    const next = await selectUpstreamKey(null, { skipUpstreamId: id });
+    if (!next) return { noAlternative: true };
+    nextAccount = { id: next.id, name: next.name };
     const w = cache.get(id)?.data?.windowLimits;
     const reset = Math.max(
       w?.fiveHour?.resetAt ?? 0,
@@ -253,7 +258,7 @@ export async function switchAccount(id, on) {
   } else {
     setManualSwitch(id, false);
   }
-  return { rows: [rowOf(key, cache.get(id))], switched: on ? 'away' : 'back' };
+  return { rows: [rowOf(key, cache.get(id))], switched: on ? 'away' : 'back', nextAccount };
 }
 
 // ── 自动定时刷新 ───────────────────────────────────────────

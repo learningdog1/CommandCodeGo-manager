@@ -175,12 +175,12 @@ export function AccountUsage() {
   const [switchingId, setSwitchingId] = useState<number | null>(null);
   const toggleSwitch = useCallback(async (r: AccountUsageRow) => {
     if (switchingId != null) return; // 防抖:慢响应下双击会连发两次,第二次反转第一次
-    const on = !r.windowState?.blocked;
+    const on = r.windowState?.source !== 'manual';
     setSwitchingId(r.id);
     try {
       const res = await switchAccount(r.id, on);
       mergeRows(res.rows ?? []);
-      toast('ok', on ? `已切换:${r.name} 的新请求将路由到其他账户` : `已恢复:${r.name} 重新参与路由`);
+      toast('ok', on ? `已切走 ${r.name}:新请求优先使用 ${res.nextAccount?.name ?? '其他可用账号'};已在途请求继续完成` : `已取消手动切走:${r.name} 将在额度可用时参与路由`);
     } catch (e) {
       toast('err', `切换失败:${(e as Error).message}`);
     } finally {
@@ -305,15 +305,15 @@ export function AccountUsage() {
                       <div className="flex shrink-0 items-center gap-1.5">
                         {!disabled && (
                           <Button size="sm"
-                            variant={r.windowState?.blocked ? 'primary' : 'default'}
+                            variant={r.windowState?.source === 'manual' ? 'primary' : 'default'}
                             loading={switchingId === r.id}
                             disabled={switchingId != null && switchingId !== r.id}
                             onClick={() => void toggleSwitch(r)}
-                            title={r.windowState?.blocked
-                              ? '恢复:该账户重新参与请求路由'
-                              : '切换账户:新请求自动路由到其他账户,窗口重置或手动恢复前不再使用它'}>
+                            title={r.windowState?.source === 'manual'
+                              ? '取消手动切走:额度可用时重新参与请求路由'
+                              : '切走此账号:新请求使用其他可用账号,已在途请求继续完成'}>
                             <ArrowRightLeft size={13} />
-                            {r.windowState?.blocked ? '恢复' : '切换'}
+                            {r.windowState?.source === 'manual' ? '恢复' : '切走'}
                           </Button>
                         )}
                         <button

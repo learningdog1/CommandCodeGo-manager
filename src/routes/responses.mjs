@@ -467,7 +467,7 @@ async function handleResponses(req, res) {
     return;
   }
   if (auth.error) {
-    sendResponsesError(res, 401, 'authentication_error', authErrorMessage(auth.error));
+    sendResponsesError(res, auth.status ?? 401, auth.status === 429 ? 'rate_limit_error' : 'authentication_error', authErrorMessage(auth.error));
     return;
   }
   const apiKey = auth.apiKey;

@@ -208,7 +208,7 @@ async function handleChatCompletions(req, res) {
     return;
   }
   if (auth.error) {
-    sendJSON(res, 401, { error: { message: authErrorMessage(auth.error), type: 'auth_error' } });
+    sendJSON(res, auth.status ?? 401, { error: { message: authErrorMessage(auth.error), type: auth.status === 429 ? 'rate_limit_error' : 'auth_error' } });
     return;
   }
   const apiKey = auth.apiKey;

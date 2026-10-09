@@ -128,3 +128,24 @@ test('store:持久化 —— 用原始 DatabaseSync 复核(模拟进程重启后
   assert.ok(clients >= 1);
   assert.equal(reqs, 6);
 });
+
+test('store: rolling 24h includes previous day and >500 requests, excludes outside range, counts cache once', async () => {
+  const { summarizeLast24Hours } = await import('../src/store/requests.mjs');
+  const end = new Date(2030, 0, 2, 0, 15).getTime();
+  const from = end - 86_400_000;
+  await insertRequest({ ts: from - 1, inputTokens: 9000 });
+  await insertRequest({ ts: end, inputTokens: 9000 });
+  for (let i = 0; i < 601; i++) {
+    await insertRequest({ ts: from + i, inputTokens: 10, outputTokens: 5, cachedTokens: 7 });
+  }
+  await insertRequest({ ts: end - 1, inputTokens: 20, outputTokens: 6, cachedTokens: 12 });
+  const summary = await summarizeLast24Hours(end);
+  assert.equal(summary.from, from);
+  assert.equal(summary.to, end);
+  assert.equal(summary.buckets.length, 24);
+  assert.equal(summary.buckets[0].requests, 601);
+  assert.equal(summary.buckets[23].requests, 1);
+  assert.equal(summary.buckets.reduce((sum, b) => sum + b.requests, 0), 602);
+  assert.equal(summary.buckets.reduce((sum, b) => sum + b.tokens, 0), 601 * 15 + 26);
+  assert.ok(summary.buckets.slice(1, 23).every(b => b.requests === 0));
+});

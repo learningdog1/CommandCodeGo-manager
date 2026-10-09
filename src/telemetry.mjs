@@ -22,12 +22,11 @@ function publish(event) {
 
 /** 落一条请求记录(并发安全;fire-and-forget,不阻塞响应)。 */
 export function recordRequest(rec) {
-  publish(rec);
-  Promise.resolve().then(() => {
+  Promise.resolve().then(async () => {
     try {
-      insertRequest(rec);
+      await insertRequest(rec);
       if ((rec.inputTokens ?? 0) > 0 || (rec.outputTokens ?? 0) > 0 || (rec.cachedTokens ?? 0) > 0) {
-        recordUsage({
+        await recordUsage({
           ts: rec.ts,
           keyId: rec.clientKeyId ?? null,
           model: rec.model ?? 'unknown',
@@ -38,6 +37,9 @@ export function recordRequest(rec) {
       }
     } catch (e) {
       log('warn', 'Telemetry persist failed', { error: e.message });
+    } finally {
+      // SSE 消费者收到事件后会立即查询统计,必须先完成落库。
+      publish(rec);
     }
   });
 }

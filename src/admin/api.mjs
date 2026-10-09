@@ -17,7 +17,7 @@ import {
   findUpstreamKeyByApiKey, maskKey,
 } from '../store/keys.mjs';
 import { detectCliAuth, extractUserKeys } from '../cli-auth.mjs';
-import { listRequests, summarizeSince } from '../store/requests.mjs';
+import { listRequests, summarizeSince, summarizeLast24Hours } from '../store/requests.mjs';
 import { usageSummary } from '../store/usage.mjs';
 import { driftStatus } from '../protocol/upstream.mjs';
 import { keyStateStore } from '../protocol/keystate.mjs';
@@ -96,6 +96,7 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
           client: { total: clients.length, active: clients.filter(k => k.status === 'active').length },
         },
         today,
+        last24h: await summarizeLast24Hours(),
         modelCount: MODELS.length,
         drift: { ...driftStatus },
       });
@@ -165,6 +166,7 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
       }
       const r = await switchAccount(id, body.on);
       if (r.notFound) return end(res, 404, { error: 'upstream key not found or disabled' });
+      if (r.noAlternative) return end(res, 409, { error: '没有其他可用账号,请先添加、启用或恢复一个未受限账号;当前账号未切换。' });
       return end(res, 200, r);
     }
 

@@ -109,3 +109,40 @@ test('telemetry:usage_daily 按天×key×model 聚合(直通 key_id 为 NULL)', 
     assert.equal(agg.output_tokens, 9);
   } finally { await s.close(); }
 });
+
+test('telemetry: SSE completion event is published after persistence; immediate overview and logs are current', async () => {
+  const s = await setup();
+  const controller = new AbortController();
+  let reader;
+  try {
+    const stream = await s.proxy.get('/admin/api/logs/stream', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(6000)]) });
+    reader = stream.body.getReader();
+    const event = (async () => {
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) throw new Error('stream ended before completion event');
+        buffer += new TextDecoder().decode(value);
+        const data = buffer.split('\n').find(line => line.startsWith('data: '));
+        if (data) return JSON.parse(data.slice(6));
+      }
+    })();
+    const r = await s.proxy.post('/v1/chat/completions',
+      { model: 'm', stream: true, messages: [{ role: 'user', content: 'hi' }] }, AUTH);
+    await r.text();
+    assert.equal((await event).outputTokens, 3);
+    const overview = await (await s.proxy.get('/admin/api/overview')).json();
+    assert.equal(overview.today.requests, 1);
+    assert.equal(overview.today.inputTokens, 9);
+    assert.equal(overview.today.outputTokens, 3);
+    assert.equal(overview.last24h.buckets.reduce((n, b) => n + b.requests, 0), 1);
+    assert.equal(overview.last24h.buckets.reduce((n, b) => n + b.tokens, 0), 12);
+    const logs = await (await s.proxy.get('/admin/api/logs?limit=10')).json();
+    assert.equal(logs.total, 1);
+    assert.equal(logs.rows[0].output_tokens, 3);
+  } finally {
+    controller.abort();
+    await reader?.cancel().catch(() => {});
+    await s.close();
+  }
+});

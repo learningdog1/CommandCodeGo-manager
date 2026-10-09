@@ -1,15 +1,15 @@
 // 额度/窗口耗尽自动轮转(H5 + 到限轮转):上游明确表示「该账户暂时用不了」时,
-// 换下一把启用中的密钥重试一次。两类耗尽:
+// 依次尝试未受限的启用密钥,每个账号最多一次。两类耗尽:
 //   402(payment required)        —— 信用耗尽:持久标记,落库 status='exhausted';
 //   429 + USAGE_EXCEEDED/window  —— 5 小时滚动 / 周窗口到顶:运行时标记到 resetAt
 //                                   (见 window-state.mjs),窗口重置后自动恢复。
 // 其余 429 是瞬态限速,**不**轮转(换 key=换设备指纹,只在确属耗尽时才值得);
 // 每把密钥独立设备指纹/会话的既有设计保证了轮转后的形态自洽。
-// 直通 user_* 已入库的密钥同样参与轮转(未入库的纯直通与 config 兜底不轮转)。
+// 已入库的直通 user_* 与 config 兜底同样参与轮转,未入库凭据保持直通。
 import { ensureInitialized } from './init.mjs';
 import { forwardToCC } from './upstream.mjs';
 import { resolveUpstreamKey } from '../auth.mjs';
-import { setUpstreamKeyStatus, findUpstreamKeyByApiKey } from '../store/keys.mjs';
+import { setUpstreamKeyStatus, findUpstreamKeyByApiKey, listUpstreamKeys } from '../store/keys.mjs';
 import { classifyExhaustion, markWindowBlocked } from './window-state.mjs';
 import { refreshAccountUsage } from './account-usage.mjs';
 import { log } from '../log.mjs';
@@ -21,7 +21,13 @@ import { log } from '../log.mjs';
  */
 export async function forwardWithRotation(auth, headers, ccBody, signal, promptCacheKey) {
   let current = auth;
+  const attemptedIds = new Set();
+  const attemptedKeys = new Set();
+  // 固定请求开始时的上限,并发添加账号不能让重试链无界增长。
+  const maxAttempts = Math.max(1, (await listUpstreamKeys()).length);
   for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
+    attemptedKeys.add(current.apiKey);
     await ensureInitialized(current.apiKey, signal);
     const response = await forwardToCC(ccBody, current.apiKey, headers, signal, promptCacheKey);
     if (response.status !== 402 && response.status !== 429) {
@@ -38,6 +44,7 @@ export async function forwardWithRotation(auth, headers, ccBody, signal, promptC
       ?? (await findUpstreamKeyByApiKey(current.apiKey))?.id
       ?? null;
     if (keyId == null) return { response, auth: current };
+    attemptedIds.add(keyId);
 
     if (ex.kind === 'credit') {
       // 标记必须先于所有返回路径 —— 轮转链最后一把(重试后仍耗尽)同样要标,
@@ -54,13 +61,14 @@ export async function forwardWithRotation(auth, headers, ccBody, signal, promptC
       t.unref?.();
     }
 
-    if (attempt > 0) {
-      return { response, auth: current }; // 已重试过一次:按原语义返回(402/429 → 映射后给下游)
+    if (attempt + 1 >= maxAttempts) {
+      return { response, auth: current };
     }
-    const next = await resolveUpstreamKey(headers, { skipUpstreamId: keyId });
-    if (!next || next.error || next.apiKey === current.apiKey) {
+    const next = await resolveUpstreamKey(headers, { skipUpstreamIds: attemptedIds });
+    if (!next || next.error || attemptedKeys.has(next.apiKey)) {
       return { response, auth: current }; // 无可轮转密钥:按原语义返回
     }
+    await response.body?.cancel().catch(() => {});
     log('info', 'Rotated to next upstream key', { from: keyId, to: next.upstreamKeyId ?? '?' });
     current = next;
   }

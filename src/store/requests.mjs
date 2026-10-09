@@ -31,6 +31,24 @@ export async function summarizeSince(ts) {
     FROM requests WHERE ts >= ?`).get(ts);
   return r;
 }
+
+/** 完整的滚动 24 小时聚合,不受日志分页上限影响。缓存 token 已包含在输入中。 */
+export async function summarizeLast24Hours(to = Date.now()) {
+  const hour = 3_600_000;
+  const from = to - 24 * hour;
+  const buckets = Array.from({ length: 24 }, (_, i) => ({ ts: from + i * hour, requests: 0, tokens: 0 }));
+  const db = getDb();
+  if (db) {
+    const rows = db.prepare(`
+      SELECT CAST((ts - ?) / ? AS INTEGER) AS bucket, COUNT(*) AS requests,
+        COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens
+      FROM requests WHERE ts >= ? AND ts < ? GROUP BY bucket
+    `).all(from, hour, from, to);
+    for (const r of rows) Object.assign(buckets[r.bucket], { requests: r.requests, tokens: r.tokens });
+  }
+  return { from, to, buckets };
+}
+
 export async function listRequests(filter = {}) {
   const db = getDb();
   if (!db) return { rows: [], total: 0 };
@@ -58,7 +76,9 @@ export async function listRequests(filter = {}) {
   const total = db.prepare(`SELECT COUNT(*) AS n FROM requests ${whereSql}`).get(...args).n;
   const limit = Math.min(Math.max(1, Number(filter.limit) || 50), 500);
   const offset = Math.max(0, Number(filter.offset) || 0);
-  const rows = db.prepare(`SELECT * FROM requests ${whereSql} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`)
+  const rows = db.prepare(`SELECT r.*, u.name AS upstream_name FROM requests r
+    LEFT JOIN upstream_keys u ON u.id = r.upstream_key_id
+    ${whereSql} ORDER BY r.ts DESC, r.id DESC LIMIT ? OFFSET ?`)
     .all(...args, limit, offset);
   return { rows, total };
 }

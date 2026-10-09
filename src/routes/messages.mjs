@@ -535,7 +535,7 @@ async function handleMessages(req, res) {
     return;
   }
   if (auth.error) {
-    sendJSON(res, 401, { type: 'error', error: { type: 'authentication_error', message: authErrorMessage(auth.error) } });
+    sendJSON(res, auth.status ?? 401, { type: 'error', error: { type: auth.status === 429 ? 'rate_limit_error' : 'authentication_error', message: authErrorMessage(auth.error) } });
     return;
   }
   const apiKey = auth.apiKey;

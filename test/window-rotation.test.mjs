@@ -206,3 +206,26 @@ test('窗口标记覆盖语义:live 不缩短更长 resetAt;manual 不被运行�
 
   resetWindowBlocks();
 });
+
+test('window state: restoring manual switch preserves both real limits; one window recovery cannot erase another', () => {
+  const { markWindowBlocked, setManualSwitch, syncFromWindowLimits, getWindowState, resetWindowBlocks } = windowStateModule;
+  resetWindowBlocks();
+  const until = Date.now() + 3600_000;
+  markWindowBlocked(1, { source: 'live', window: 'weekly', until: until + 3600_000 });
+  setManualSwitch(1, true);
+  markWindowBlocked(1, { source: 'live', window: 'fiveHour', until });
+  assert.equal(getWindowState(1).source, 'manual');
+  setManualSwitch(1, false);
+  assert.equal(getWindowState(1).window, 'weekly');
+  syncFromWindowLimits(1, {
+    limited: true,
+    fiveHour: { used: 3, cap: 3, resetAt: until },
+    weekly: { used: 0, cap: 6 },
+  });
+  assert.equal(getWindowState(1).window, 'fiveHour');
+  syncFromWindowLimits(1, { limited: true, fiveHour: { used: 0, cap: 3 }, weekly: { used: 0, cap: 6 } });
+  assert.equal(getWindowState(1).blocked, false);
+  markWindowBlocked(1, { source: 'live', window: 'weekly', until: Date.now() - 1 });
+  assert.equal(getWindowState(1).blocked, false, 'expired window becomes eligible again');
+  resetWindowBlocks();
+});

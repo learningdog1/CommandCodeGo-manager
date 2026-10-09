@@ -66,12 +66,14 @@ export interface Overview {
     client: { total: number; active: number };
   };
   today: { requests: number; errors: number; inputTokens: number; outputTokens: number; cachedTokens: number };
+  last24h: { from: number; to: number; buckets: { ts: number; requests: number; tokens: number }[] };
   modelCount: number;
   drift: { lastCheckedAt: number | null; latestVersion: string | null; protocolVersion: string; changed: boolean; lastError: string | null };
 }
 
 export interface RequestRow {
   id: number; ts: number; endpoint: string; proxy_key: string | null; upstream_key_id: number | null;
+  upstream_name?: string | null;
   model: string | null; status_code: number | null; stream: number; duration_ms: number | null;
   input_tokens: number; output_tokens: number; cached_tokens: number;
   finish_reason: string | null; error_type: string | null; client_disconnected: number;
@@ -172,7 +174,7 @@ export const refreshAccountUsage = (id?: number) =>
   api<{ rows: AccountUsageRow[]; refreshed: number; failed: number }>('/admin/api/account-usage/refresh',
     { method: 'POST', body: id !== undefined ? { id } : {} });
 export const switchAccount = (id: number, on: boolean) =>
-  api<{ rows: AccountUsageRow[]; switched: 'away' | 'back' }>('/admin/api/account-usage/switch',
+  api<{ rows: AccountUsageRow[]; switched: 'away' | 'back'; nextAccount: { id: number; name: string } | null }>('/admin/api/account-usage/switch',
     { method: 'POST', body: { id, on } });
 
 export const fetchOverview = () => api<Overview>('/admin/api/overview');

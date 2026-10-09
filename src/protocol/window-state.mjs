@@ -8,90 +8,72 @@
 // 与 402 信用耗尽的持久标记(status='exhausted',落库)互补:那是额度没了,这是窗口到了。
 import { log } from '../log.mjs';
 
-// upstreamKeyId → { until: ms(0=永久,manual 不用), source, window, at }
+// keyId → Map(window → block)。手动切走和各额度窗口独立保存,
+// 取消手动切走不能顺带清除真实的额度限制,一个窗口恢复也不能覆盖另一个窗口。
 const blocks = new Map();
 
-function prune(id) {
-  const b = blocks.get(id);
-  if (b && b.until && b.until <= Date.now()) { blocks.delete(id); return null; }
-  return b ?? null;
+function activeBlocks(keyId) {
+  const entries = blocks.get(keyId);
+  if (!entries) return [];
+  for (const [window, b] of entries) {
+    if (b.until && b.until <= Date.now()) entries.delete(window);
+  }
+  if (!entries.size) blocks.delete(keyId);
+  return [...entries.values()];
 }
 
-/** 该上游密钥当前是否窗口受限(过期自动清除)。 */
 export function isWindowBlocked(keyId) {
-  if (keyId == null) return false;
-  return prune(keyId) !== null;
+  return keyId != null && activeBlocks(keyId).length > 0;
 }
 
-/**
- * 打标记。覆盖规则(同一 key 只存一条,manual 与 live/usage 两类互不侵犯):
- *   - 已有 manual,来 live/usage → 不动(manual 只经 setManualSwitch(off) 或到期解除);
- *   - 已有 manual,来 manual → 取更晚 until(不缩短既有屏蔽);
- *   - 已有 live/usage,来 manual → 覆盖(手动切换优先于运行时推断);
- *   - 已有 live/usage,来 live/usage → 保留 until 更晚者 —— live 的 10min 探针 TTL
- *     不得覆盖 usage 同步写下的更长 resetAt,否则窗口标记会提前放行。
- */
 export function markWindowBlocked(keyId, { source, window, until }) {
   if (keyId == null) return;
-  const cur = blocks.get(keyId);
-  const next = { source, window, until: until || 0, at: Date.now() };
-  if (cur) {
-    if (cur.source === 'manual' && source !== 'manual') return;
-    if (cur.source !== 'manual' && source !== 'manual' && (cur.until || 0) >= (next.until || 0)) return;
-  }
-  blocks.set(keyId, next);
+  activeBlocks(keyId);
+  const entries = blocks.get(keyId) ?? new Map();
+  const slot = source === 'manual' ? 'manual' : window;
+  const cur = entries.get(slot);
+  const next = { source, window: slot, until: until || 0, at: Date.now() };
+  if (cur && (cur.until || Infinity) >= (next.until || Infinity)) return;
+  entries.set(slot, next);
+  blocks.set(keyId, entries);
 }
 
-/** 面板用的状态摘要(blocked/source/window/until;manual 与 live 并存时以 manual 为准展示)。 */
 export function getWindowState(keyId) {
-  if (keyId == null) return { blocked: false, source: null, window: null, until: null };
-  const list = [...blocks.entries()]
-    .filter(([id, b]) => id === keyId && (!b.until || b.until > Date.now()))
-    .map(([, b]) => b);
-  if (list.length === 0) return { blocked: false, source: null, window: null, until: null };
-  const manual = list.find(b => b.source === 'manual');
-  const pick = manual ?? list.reduce((a, b) => ((b.until || Infinity) > (a.until || Infinity) ? b : a));
+  const list = activeBlocks(keyId);
+  if (!list.length) return { blocked: false, source: null, window: null, until: null };
+  const pick = list.find(b => b.source === 'manual')
+    ?? list.reduce((a, b) => ((b.until || Infinity) > (a.until || Infinity) ? b : a));
   return { blocked: true, source: pick.source, window: pick.window, until: pick.until || null };
 }
 
-/**
- * 从 account-usage 刷新结果同步:窗口到顶 → 标记(source=usage,到 resetAt);
- * 窗口已释放 → 清除该窗口的 live/usage 标记(manual 不动,由用户手动恢复)。
- * windowLimits 形状:{ limited, fiveHour:{used,cap,exceeded,resetAt(ms)}, weekly:{...} }。
- */
+/** 用量刷新只更新有数据的窗口;失败/缺失数据不解除 live 标记。 */
 export function syncFromWindowLimits(keyId, windowLimits) {
-  if (keyId == null) return;
-  const hit = (w) => !!w && w.cap > 0 && (w.exceeded === true || w.used >= w.cap);
+  if (keyId == null || !windowLimits) return;
+  const hit = w => !!w && (w.exceeded === true || (w.cap > 0 && w.used >= w.cap));
   for (const name of ['fiveHour', 'weekly']) {
-    const w = windowLimits?.[name];
+    const w = windowLimits[name];
     if (hit(w)) {
-      const until = w.resetAt > Date.now() ? w.resetAt : Date.now() + 10 * 60_000; // resetAt 缺失时给探针 TTL
-      // 覆盖规则集中在 markWindowBlocked(manual 不被覆盖、live/usage 取更晚者)
+      const until = w.resetAt > Date.now() ? w.resetAt : Date.now() + 10 * 60_000;
       markWindowBlocked(keyId, { source: 'usage', window: name, until });
-    } else if (w && blocks.get(keyId)?.source !== 'manual') {
-      // 窗口有数据且未到顶:清除 live/usage 标记(该窗口已恢复)
-      const b = blocks.get(keyId);
-      if (b && b.window === name) blocks.delete(keyId);
+    } else if (w) {
+      blocks.get(keyId)?.delete(name);
     }
   }
-  // 套餐无窗口限制(limited=false/无 windowLimits):清除全部非 manual 标记
-  if (windowLimits && windowLimits.limited === false) {
-    const b = blocks.get(keyId);
-    if (b && b.source !== 'manual') blocks.delete(keyId);
+  if (windowLimits.limited === false) {
+    const entries = blocks.get(keyId);
+    if (entries) for (const name of entries.keys()) if (name !== 'manual') entries.delete(name);
+  } else if (windowLimits.fiveHour && windowLimits.weekly && !windowLimits.exceeded
+    && !hit(windowLimits.fiveHour) && !hit(windowLimits.weekly)) {
+    blocks.get(keyId)?.delete('usage');
   }
 }
 
-/** 手动切换(管理界面):on=true 屏蔽 1 小时(或已知窗口重置时刻,取更晚),on=false 立即恢复。 */
+/** 手动切走至少 1 小时,已知受限窗口更长时延长;取消只删除手动状态。 */
 export function setManualSwitch(keyId, on, maxUntil = 0) {
   if (keyId == null) return;
-  if (!on) {
-    const b = blocks.get(keyId);
-    if (b?.source === 'manual') blocks.delete(keyId);
-    return;
-  }
-  // 不缩短既有屏蔽(如 usage 已标到 3 天后的 weekly reset);手动恢复只走 on=false
-  const cur = blocks.get(keyId);
-  const until = Math.max(Date.now() + 60 * 60_000, maxUntil || 0, cur?.until || 0);
+  if (!on) { blocks.get(keyId)?.delete('manual'); return; }
+  const until = Math.max(Date.now() + 60 * 60_000, maxUntil || 0,
+    ...activeBlocks(keyId).map(b => b.until || 0));
   markWindowBlocked(keyId, { source: 'manual', window: 'manual', until });
   log('info', 'Account manually switched away (window block)', { upstreamKeyId: keyId, until: new Date(until).toISOString() });
 }

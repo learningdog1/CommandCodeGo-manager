@@ -1,10 +1,10 @@
 // 总览仪表盘(Phase 3.2):统计卡 + 24h 请求/tokens 双轴图 + 最近请求 + 服务状态。
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, AlertTriangle, Coins, KeyRound, Radio, Timer } from 'lucide-react';
-import { fetchLogs, fetchOverview, type Overview, type RequestRow } from '../api';
+import { fetchLogs, fetchOverview, tokenQuery, type Overview, type RequestRow } from '../api';
 import {
   Badge, Card, CardBody, CardHeader, EChart, echartsBase, EmptyState, Loading, Pagination, vgrad,
-  Skeleton, StatCard, Table, Td, Th, toast, themeColor, useTheme, fmtInt, fmtK, fmtMs, fmtTime,
+  Skeleton, StatCard, Table, Td, Th, themeColor, useTheme, fmtInt, fmtK, fmtMs, fmtTime,
 } from '../ui';
 
 // 运行时长人性化(与 AppShell 口径一致)
@@ -20,17 +20,6 @@ function StatusBadge({ code }: { code: number | null }) {
   return <Badge kind={kind}>{code}</Badge>;
 }
 
-// 按小时分桶聚合(请求数 + tokens 总量)
-function bucketByHour(rows: RequestRow[]) {
-  const buckets = Array.from({ length: 24 }, () => ({ req: 0, tokens: 0 }));
-  for (const r of rows) {
-    const h = new Date(r.ts).getHours();
-    buckets[h].req += 1;
-    buckets[h].tokens += (r.input_tokens ?? 0) + (r.output_tokens ?? 0) + (r.cached_tokens ?? 0);
-  }
-  return buckets;
-}
-
 // 服务状态卡的单行
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -44,43 +33,58 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export function Dashboard() {
   const [ov, setOv] = useState<Overview | null>(null);
   const [rows, setRows] = useState<RequestRow[] | null>(null); // null = 加载中
-  const [logsTotal, setLogsTotal] = useState(0); // 服务端 total(行数据被 limit 截断,计数不能取 rows.length)
+  const [logsTotal, setLogsTotal] = useState(0);
   const [logsFailed, setLogsFailed] = useState(false);
-  const [recentPage, setRecentPage] = useState(1); // 最近请求分页(今日数据前端切片)
+  const [overviewFailed, setOverviewFailed] = useState(false);
+  const [recentPage, setRecentPage] = useState(1);
 
-  // overview 每 10s 轮询(失败静默,下轮重试)
+  // 请求完成事件触发刷新;断线时 5s 轮询兜底,恢复连接/回到页面时补拉。
+  // 合并短时间内的事件且串行查询,避免旧响应覆盖新数据或高流量下无限发请求。
   useEffect(() => {
     let alive = true;
-    const tick = async () => {
-      try { const d = await fetchOverview(); if (alive) setOv(d); } catch { /* 静默 */ }
+    let running = false;
+    let dirty = false;
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      if (!alive) return;
+      if (running) { dirty = true; return; }
+      running = true;
+      const [overview, logs] = await Promise.allSettled([
+        fetchOverview(), fetchLogs(`?limit=10&offset=${(recentPage - 1) * 10}`),
+      ]);
+      if (!alive) return;
+      if (overview.status === 'fulfilled') { setOv(overview.value); setOverviewFailed(false); }
+      else setOverviewFailed(true);
+      if (logs.status === 'fulfilled') {
+        setRows(logs.value.rows); setLogsTotal(logs.value.total); setLogsFailed(false);
+        setRecentPage(p => Math.min(p, Math.max(1, Math.ceil(logs.value.total / 10))));
+      } else setLogsFailed(true);
+      running = false;
+      if (dirty) { dirty = false; schedule(); }
     };
-    void tick();
-    const timer = setInterval(tick, 10_000);
-    return () => { alive = false; clearInterval(timer); };
-  }, []);
-
-  // 今日日志(图表 + 最近请求),挂载时加载一次
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const start = new Date(); start.setHours(0, 0, 0, 0);
-        const d = await fetchLogs(`?from=${start.getTime()}&limit=500`);
-        if (alive) { setRows(d.rows); setLogsTotal(d.total); setLogsFailed(false); }
-      } catch (e) {
-        if (alive) {
-          setRows([]); setLogsFailed(true);
-          toast('err', `加载今日日志失败:${(e as Error).message}`);
-        }
-      }
-    })();
-    return () => { alive = false; };
-  }, []);
+    const schedule = () => {
+      if (!alive || pending !== undefined) return;
+      pending = setTimeout(() => { pending = undefined; void refresh(); }, 250);
+    };
+    const stream = new EventSource('/admin/api/logs/stream' + tokenQuery());
+    stream.onmessage = schedule;
+    stream.onopen = schedule;
+    const timer = setInterval(schedule, 5_000);
+    const visible = () => { if (document.visibilityState === 'visible') schedule(); };
+    document.addEventListener('visibilitychange', visible);
+    window.addEventListener('focus', schedule);
+    void refresh();
+    return () => {
+      alive = false; stream.close(); clearInterval(timer); clearTimeout(pending);
+      document.removeEventListener('visibilitychange', visible);
+      window.removeEventListener('focus', schedule);
+    };
+  }, [recentPage]);
 
   // 24h 双轴图:左轴请求数(柱,accent),右轴 tokens(线,txt2);配色随主题
   const [theme] = useTheme();
   const chartOption = useMemo(() => {
-    if (!rows) return null;
+    if (!ov) return null;
     const C = {
       accent: themeColor('--color-accent'), brand2: themeColor('--color-brand2'),
       violet: themeColor('--color-violet'),
@@ -88,7 +92,7 @@ export function Dashboard() {
       line: themeColor('--color-line'), line2: themeColor('--color-line2'),
     };
     const base = echartsBase();
-    const buckets = bucketByHour(rows);
+    const buckets = ov.last24h.buckets;
     return {
       ...base,
       grid: { ...base.grid, top: 56, right: 56 },
@@ -96,7 +100,7 @@ export function Dashboard() {
       legend: { data: ['请求数', 'tokens'], top: 4, right: 8, itemWidth: 14, textStyle: { color: C.txt2, fontSize: 12 } },
       xAxis: {
         type: 'category',
-        data: buckets.map((_, h) => `${String(h).padStart(2, '0')}:00`),
+        data: buckets.map(b => new Date(b.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })),
         axisLine: { lineStyle: { color: C.line2 } },
         axisTick: { show: false },
         axisLabel: { color: C.txt2, fontSize: 11 },
@@ -116,7 +120,7 @@ export function Dashboard() {
       series: [
         {
           name: '请求数', type: 'bar', yAxisIndex: 0,
-          data: buckets.map(b => b.req),
+          data: buckets.map(b => b.requests),
           itemStyle: { color: vgrad(C.accent, C.accent + '22'), borderRadius: [4, 4, 0, 0] },
           barMaxWidth: 18,
         },
@@ -130,10 +134,10 @@ export function Dashboard() {
         },
       ],
     };
-  }, [rows, theme]);
+  }, [ov, theme]);
 
   const today = ov?.today;
-  const todayTokens = (today?.inputTokens ?? 0) + (today?.outputTokens ?? 0) + (today?.cachedTokens ?? 0);
+  const todayTokens = (today?.inputTokens ?? 0) + (today?.outputTokens ?? 0);
   const errRate = today && today.requests > 0 ? (today.errors / today.requests) * 100 : 0;
 
   return (
@@ -166,14 +170,14 @@ export function Dashboard() {
 
       {/* ── 24 小时请求与 Tokens ── */}
       <Card>
-        <CardHeader title="24 小时请求与 Tokens" />
+        <CardHeader title="24 小时请求与 Tokens" extra={<span className="text-xs text-txt3">过去 24 小时 · 请求完成后自动更新</span>} />
         <CardBody className="p-4">
-          {logsFailed ? (
-            <EmptyState title="图表数据加载失败" hint="请确认代理服务可达后刷新页面重试。" />
-          ) : !rows ? (
-            <Loading>加载今日数据…</Loading>
-          ) : rows.length === 0 ? (
-            <EmptyState title="今日暂无请求" hint="发起新的代理请求后,这里会按小时展示请求量与 token 消耗。" />
+          {overviewFailed ? (
+            <EmptyState title="图表数据加载失败" hint="正在自动重试,请确认代理服务可达。" />
+          ) : !ov ? (
+            <Loading>加载过去 24 小时数据…</Loading>
+          ) : !ov.last24h.buckets.some(b => b.requests > 0) ? (
+            <EmptyState title="过去 24 小时暂无请求" hint="代理请求完成后,这里会自动展示请求量与 token 消耗。" />
           ) : (
             chartOption && <EChart option={chartOption} className="h-72" />
           )}
@@ -184,36 +188,37 @@ export function Dashboard() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader title="最近请求" extra={<span className="tnum text-xs text-txt3">
-            今日共 {fmtInt(logsTotal)} 条{logsTotal > (rows?.length ?? 0) ? `(展示最近 ${fmtInt(rows?.length ?? 0)})` : ''}
+            共 {fmtInt(logsTotal)} 条 · 自动更新
           </span>} />
           {logsFailed ? (
-            <EmptyState title="请求列表加载失败" hint="请确认代理服务可达后刷新页面重试。" />
+            <EmptyState title="请求列表加载失败" hint="正在自动重试,请确认代理服务可达。" />
           ) : !rows ? (
             <Loading />
           ) : rows.length === 0 ? (
-            <EmptyState title="暂无请求" hint="今日还没有任何代理请求记录。" />
+            <EmptyState title="暂无请求" hint="代理请求完成后会自动出现在这里。" />
           ) : (
             <>
               <Table>
                 <thead>
                   <tr>
-                    <Th>时间</Th><Th>端点</Th><Th>模型</Th><Th>状态</Th><Th>耗时</Th><Th className="text-right">tokens</Th>
+                    <Th>时间</Th><Th>端点</Th><Th>模型</Th><Th>账号</Th><Th>状态</Th><Th>耗时</Th><Th className="text-right">tokens</Th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.slice((recentPage - 1) * 10, recentPage * 10).map(r => (
+                  {rows.map(r => (
                     <tr key={r.id} className="transition-colors hover:bg-panel2/60">
                       <Td className="tnum whitespace-nowrap text-xs text-txt2">{fmtTime(r.ts)}</Td>
                       <Td className="font-mono text-xs">{r.endpoint || '—'}</Td>
                       <Td className="max-w-36 truncate text-xs">{r.model ?? '—'}</Td>
+                      <Td className="max-w-32 truncate text-xs text-txt2">{r.upstream_name ?? (r.upstream_key_id != null ? `#${r.upstream_key_id}` : '—')}</Td>
                       <Td className="whitespace-nowrap"><StatusBadge code={r.status_code} /></Td>
                       <Td className="tnum text-xs">{fmtMs(r.duration_ms)}</Td>
-                      <Td className="tnum text-right text-xs">{fmtK((r.input_tokens ?? 0) + (r.output_tokens ?? 0) + (r.cached_tokens ?? 0))}</Td>
+                      <Td className="tnum text-right text-xs">{fmtK((r.input_tokens ?? 0) + (r.output_tokens ?? 0))}</Td>
                     </tr>
                   ))}
                 </tbody>
               </Table>
-              <Pagination page={recentPage} total={rows.length} pageSize={10} onChange={setRecentPage} />
+              <Pagination page={recentPage} total={logsTotal} pageSize={10} onChange={setRecentPage} />
             </>
           )}
         </Card>
