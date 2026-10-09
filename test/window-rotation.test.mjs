@@ -1,5 +1,5 @@
-// 窗口到限轮转与手动切换测试:5 小时/周窗口到顶(429 USAGE_EXCEEDED)时
-// 运行时标记 + 自动换账户;窗口重置后自动恢复;手动切换/恢复经管理 API;
+// 窗口到限轮转与固定承接账户测试:5 小时/周窗口到顶(429 USAGE_EXCEEDED)时
+// 运行时标记 + 自动换账户;窗口重置后自动恢复;固定/取消固定账户经管理 API;
 // 瞬态 429 不轮转。直通 user_* 入库密钥同样参与。
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -111,7 +111,7 @@ test('window-rotation:窗口未重置期间,后续请求直接走 B(不再打 A)
   assert.equal(genAuths().filter(a => a === `Bearer ${KEY_A}`).length, before, 'A 未再被打(解析期即被窗口标记跳过)');
 });
 
-test('window-rotation:手动切换 API → 状态可见;恢复后回 A;直通密钥同样轮转', async () => {
+test('window-rotation:固定账户 API → 流量到固定账户;取消固定回绑定;直通密钥同样轮转', async () => {
   // 窗口已重置:刷新账号用量 → 同步清除 live 标记 → 绑定优先回 A
   resetAtSec = 0;
   const ref = await (await proxy.post('/admin/api/account-usage/refresh', { id: 1 })).json();
@@ -120,23 +120,22 @@ test('window-rotation:手动切换 API → 状态可见;恢复后回 A;直通密
   assert.equal(back.status, 200);
   assert.equal(mock.lastGenerate().headers['authorization'], `Bearer ${KEY_A}`, '窗口恢复后绑定优先回到 A');
 
-  // 手动切换:A 切走 → 新请求落 B
-  const sw = await (await proxy.post('/admin/api/account-usage/switch', { id: 1, on: true })).json();
-  assert.equal(sw.switched, 'away');
-  assert.equal(sw.rows[0].windowState.blocked, true);
-  assert.equal(sw.rows[0].windowState.source, 'manual');
+  // 固定 B:新请求优先 B(高于客户端密钥绑定 A)
+  const pin = await (await proxy.post('/admin/api/account-usage/pin', { id: 2 })).json();
+  assert.deepEqual(pin.pinned, { id: 2, name: '账户B' });
+  assert.equal(pin.rows.find(x => x.id === 2).pinned, true);
   const r2 = await chat();
   assert.equal(r2.status, 200);
-  assert.equal(mock.lastGenerate().headers['authorization'], `Bearer ${KEY_B}`, '手动切换后新请求走 B');
+  assert.equal(mock.lastGenerate().headers['authorization'], `Bearer ${KEY_B}`, '固定后新请求走 B');
 
-  // 快照接口能看到窗口状态
+  // 快照接口能看到固定状态
   const snap = await (await proxy.get('/admin/api/account-usage')).json();
-  assert.equal(snap.rows.find(x => x.id === 1).windowState.source, 'manual');
+  assert.equal(snap.rows.find(x => x.id === 2).pinned, true);
 
-  // 恢复:回到 A
-  const back2 = await (await proxy.post('/admin/api/account-usage/switch', { id: 1, on: false })).json();
-  assert.equal(back2.switched, 'back');
-  assert.equal(back2.rows[0].windowState.blocked, false);
+  // 取消固定:回到绑定 A
+  const unpin = await (await proxy.post('/admin/api/account-usage/pin', { id: null })).json();
+  assert.equal(unpin.pinned, null);
+  assert.ok(unpin.rows.every(x => x.pinned === false));
   const r3 = await chat();
   assert.equal(r3.status, 200);
   assert.equal(mock.lastGenerate().headers['authorization'], `Bearer ${KEY_A}`);
@@ -183,7 +182,7 @@ test('window-rotation:瞬态 429(无 USAGE_EXCEEDED/无 window)不轮转', async
   }
 });
 
-test('窗口标记覆盖语义:live 不缩短更长 resetAt;manual 不被运行时标记覆盖(纯单元)', () => {
+test('窗口标记覆盖语义:live 不缩短 usage 写下的更长 resetAt(纯单元)', () => {
   const { markWindowBlocked, isWindowBlocked, getWindowState, resetWindowBlocks } =
     windowStateModule;
   resetWindowBlocks();
@@ -198,24 +197,15 @@ test('窗口标记覆盖语义:live 不缩短更长 resetAt;manual 不被运行�
   assert.equal(getWindowState(keyId).source, 'usage');
   assert.ok(Math.abs((getWindowState(keyId).until ?? 0) - later) < 1000, 'until 保持更晚者');
 
-  // manual 生效且不被 live/usage 覆盖(只能经 setManualSwitch(false) 解除)
-  markWindowBlocked(keyId, { source: 'manual', window: 'manual', until: Date.now() + 3600_000 });
-  assert.equal(getWindowState(keyId).source, 'manual');
-  markWindowBlocked(keyId, { source: 'live', window: 'fiveHour', until: later });
-  assert.equal(getWindowState(keyId).source, 'manual');
-
   resetWindowBlocks();
 });
 
-test('window state: restoring manual switch preserves both real limits; one window recovery cannot erase another', () => {
-  const { markWindowBlocked, setManualSwitch, syncFromWindowLimits, getWindowState, resetWindowBlocks } = windowStateModule;
+test('window state: one window recovery cannot erase another; expired window becomes eligible', () => {
+  const { markWindowBlocked, syncFromWindowLimits, getWindowState, resetWindowBlocks } = windowStateModule;
   resetWindowBlocks();
   const until = Date.now() + 3600_000;
   markWindowBlocked(1, { source: 'live', window: 'weekly', until: until + 3600_000 });
-  setManualSwitch(1, true);
   markWindowBlocked(1, { source: 'live', window: 'fiveHour', until });
-  assert.equal(getWindowState(1).source, 'manual');
-  setManualSwitch(1, false);
   assert.equal(getWindowState(1).window, 'weekly');
   syncFromWindowLimits(1, {
     limited: true,

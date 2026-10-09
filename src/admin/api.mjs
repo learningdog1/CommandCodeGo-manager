@@ -21,7 +21,7 @@ import { listRequests, summarizeSince, summarizeLast24Hours } from '../store/req
 import { usageSummary } from '../store/usage.mjs';
 import { driftStatus } from '../protocol/upstream.mjs';
 import { keyStateStore } from '../protocol/keystate.mjs';
-import { accountUsageSnapshot, refreshAccountUsage, switchAccount } from '../protocol/account-usage.mjs';
+import { accountUsageSnapshot, refreshAccountUsage, pinAccount } from '../protocol/account-usage.mjs';
 import { DEVICE_PROFILE, slugifyProjectPath } from '../protocol/fingerprint.mjs';
 import { MODELS } from '../protocol/models.mjs';
 
@@ -157,16 +157,15 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
       if (r.notFound) return end(res, 404, { error: 'upstream key not found or disabled' });
       return end(res, 200, r);
     }
-    // ── 手动切换账户:标记窗口受限,新请求自动落到其他账户;on=false 恢复 ──
-    if (req.method === 'POST' && path === '/account-usage/switch') {
+    // ── 固定承接账户:「切到此账号」新请求优先路由到该账户;id=null 取消固定 ──
+    if (req.method === 'POST' && path === '/account-usage/pin') {
       const body = await readBody(req).catch(() => null);
-      const id = Number(body?.id);
-      if (!Number.isInteger(id) || id <= 0 || typeof body?.on !== 'boolean') {
-        return end(res, 400, { error: 'id and on (boolean) are required' });
+      const id = body?.id ?? null;
+      if (id !== null && (!Number.isInteger(id) || id <= 0)) {
+        return end(res, 400, { error: 'id must be a positive integer or null' });
       }
-      const r = await switchAccount(id, body.on);
+      const r = await pinAccount(id);
       if (r.notFound) return end(res, 404, { error: 'upstream key not found or disabled' });
-      if (r.noAlternative) return end(res, 409, { error: '没有其他可用账号,请先添加、启用或恢复一个未受限账号;当前账号未切换。' });
       return end(res, 200, r);
     }
 

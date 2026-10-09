@@ -1,17 +1,14 @@
-// 上游账户「窗口受限」运行时状态:自动轮转与手动切换账户的共同依据。
+// 上游账户「窗口受限」运行时状态:自动轮转的依据。
 // 上游的 5 小时滚动 / 周窗口到限时并不改变密钥的持久状态(账还在、信用可能还有),
 // 只是该账户暂时不可用 —— 所以这里只做**进程内**的临时标记,到期自动解除:
 //   live   —— 请求打到上游收到 429 USAGE_EXCEEDED(或 error.rateLimit.window)时标记,
 //             有效期到 resetAt(未知则探针 TTL,到期自动放行重试);
-//   usage  —— account-usage 刷新发现 fiveHour/weekly 到顶时标记/已释放时清除;
-//   manual —— 管理界面「切换账户」按钮写入(1 小时 TTL),再次点击立即恢复。
+//   usage  —— account-usage 刷新发现 fiveHour/weekly 到顶时标记/已释放时清除。
 // 与 402 信用耗尽的持久标记(status='exhausted',落库)互补:那是额度没了,这是窗口到了。
-import { log } from '../log.mjs';
-
-// keyId → Map(window → block)。手动切走和各额度窗口独立保存,
-// 取消手动切走不能顺带清除真实的额度限制,一个窗口恢复也不能覆盖另一个窗口。
 const blocks = new Map();
 
+// keyId → Map(window → block)。各额度窗口独立保存,
+// 一个窗口恢复也不能覆盖另一个。
 function activeBlocks(keyId) {
   const entries = blocks.get(keyId);
   if (!entries) return [];
@@ -30,19 +27,17 @@ export function markWindowBlocked(keyId, { source, window, until }) {
   if (keyId == null) return;
   activeBlocks(keyId);
   const entries = blocks.get(keyId) ?? new Map();
-  const slot = source === 'manual' ? 'manual' : window;
-  const cur = entries.get(slot);
-  const next = { source, window: slot, until: until || 0, at: Date.now() };
+  const cur = entries.get(window);
+  const next = { source, window, until: until || 0, at: Date.now() };
   if (cur && (cur.until || Infinity) >= (next.until || Infinity)) return;
-  entries.set(slot, next);
+  entries.set(window, next);
   blocks.set(keyId, entries);
 }
 
 export function getWindowState(keyId) {
   const list = activeBlocks(keyId);
   if (!list.length) return { blocked: false, source: null, window: null, until: null };
-  const pick = list.find(b => b.source === 'manual')
-    ?? list.reduce((a, b) => ((b.until || Infinity) > (a.until || Infinity) ? b : a));
+  const pick = list.reduce((a, b) => ((b.until || Infinity) > (a.until || Infinity) ? b : a));
   return { blocked: true, source: pick.source, window: pick.window, until: pick.until || null };
 }
 
@@ -60,22 +55,11 @@ export function syncFromWindowLimits(keyId, windowLimits) {
     }
   }
   if (windowLimits.limited === false) {
-    const entries = blocks.get(keyId);
-    if (entries) for (const name of entries.keys()) if (name !== 'manual') entries.delete(name);
+    blocks.delete(keyId);
   } else if (windowLimits.fiveHour && windowLimits.weekly && !windowLimits.exceeded
     && !hit(windowLimits.fiveHour) && !hit(windowLimits.weekly)) {
     blocks.get(keyId)?.delete('usage');
   }
-}
-
-/** 手动切走至少 1 小时,已知受限窗口更长时延长;取消只删除手动状态。 */
-export function setManualSwitch(keyId, on, maxUntil = 0) {
-  if (keyId == null) return;
-  if (!on) { blocks.get(keyId)?.delete('manual'); return; }
-  const until = Math.max(Date.now() + 60 * 60_000, maxUntil || 0,
-    ...activeBlocks(keyId).map(b => b.until || 0));
-  markWindowBlocked(keyId, { source: 'manual', window: 'manual', until });
-  log('info', 'Account manually switched away (window block)', { upstreamKeyId: keyId, until: new Date(until).toISOString() });
 }
 
 /**

@@ -149,3 +149,31 @@ test('store: rolling 24h includes previous day and >500 requests, excludes outsi
   assert.equal(summary.buckets.reduce((sum, b) => sum + b.tokens, 0), 601 * 15 + 26);
   assert.ok(summary.buckets.slice(1, 23).every(b => b.requests === 0));
 });
+
+test('store:设置 KV 与固定承接账号(固定跨重启持久化)', async () => {
+  const { getSetting, setSetting, deleteSetting } = await import('../src/store/settings.mjs');
+  assert.equal(await getSetting('kv_test'), null);
+  await setSetting('kv_test', 'v1');
+  assert.equal(await getSetting('kv_test'), 'v1');
+  await setSetting('kv_test', 'v2');
+  assert.equal(await getSetting('kv_test'), 'v2');
+  await deleteSetting('kv_test');
+  assert.equal(await getSetting('kv_test'), null);
+
+  const { getPinnedUpstreamKeyId, setPinnedUpstreamKeyId } = await import('../src/store/keys.mjs');
+  assert.equal(await getPinnedUpstreamKeyId(), null, '未固定时返回 null(而非 NaN/0)');
+  await setPinnedUpstreamKeyId('bogus');
+  assert.equal(await getPinnedUpstreamKeyId(), null, '脏值按未固定处理');
+  const up = (await listUpstreamKeys()).find(k => k.status === 'active');
+  await setPinnedUpstreamKeyId(up.id);
+  assert.equal(await getPinnedUpstreamKeyId(), up.id);
+  await setPinnedUpstreamKeyId(null);
+  assert.equal(await getPinnedUpstreamKeyId(), null);
+  // 持久化:原始 DatabaseSync 复核(固定是路由偏好,重启必须保留)
+  await setPinnedUpstreamKeyId(up.id);
+  const raw = new DatabaseSync(join(dataDir, 'ccp.db'));
+  const row = raw.prepare("SELECT value FROM settings WHERE key = 'route_pinned_upstream_id'").get();
+  raw.close();
+  assert.equal(row.value, String(up.id));
+  await setPinnedUpstreamKeyId(null);
+});

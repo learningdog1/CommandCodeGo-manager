@@ -8,8 +8,8 @@ import { log } from '../log.mjs';
 
 let db = null;
 let degraded = false;
-// 内存降级容器(keys.mjs 在 getDb() 为 null 时使用)
-export const memoryFallback = { upstreamKeys: new Map(), clientKeys: new Map(), nextId: 1 };
+// 内存降级容器(keys.mjs / settings.mjs 在 getDb() 为 null 时使用)
+export const memoryFallback = { upstreamKeys: new Map(), clientKeys: new Map(), settings: new Map(), nextId: 1 };
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS upstream_keys (
@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS usage_daily (
   cached_tokens INTEGER NOT NULL DEFAULT 0,
   requests INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (day, key_id, model)
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 `;
 

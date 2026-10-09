@@ -4,6 +4,7 @@
 // 日后若加故障转移免迁移。DB 降级时走内存(不持久化)。
 import { createHash, randomBytes } from 'node:crypto';
 import { getDb, memoryFallback } from './db.mjs';
+import { getSetting, setSetting, deleteSetting } from './settings.mjs';
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 const now = () => Date.now();
@@ -82,6 +83,21 @@ export async function touchUpstreamKey(id) {
   const db = getDb();
   if (!db) { const k = memoryFallback.upstreamKeys.get(id); if (k) k.last_used_at = now(); return; }
   db.prepare('UPDATE upstream_keys SET last_used_at = ? WHERE id = ?').run(now(), id);
+}
+
+// ── 固定承接账号(管理界面「切到此账号」)──────────────────
+// 持久化的路由偏好:id 非空时新请求优先使用该账号(高于客户端密钥绑定);
+// 不可用时按常规可用性规则兜底,恢复后自动回到该账号。null = 未固定。
+const PIN_KEY = 'route_pinned_upstream_id';
+
+export async function getPinnedUpstreamKeyId() {
+  const n = Number(await getSetting(PIN_KEY));
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+export async function setPinnedUpstreamKeyId(id) {
+  if (id == null) await deleteSetting(PIN_KEY);
+  else await setSetting(PIN_KEY, String(id));
 }
 
 // ── 客户端 key ──────────────────────────────────────────────

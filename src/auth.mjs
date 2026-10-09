@@ -5,7 +5,10 @@
 // 会话与设备指纹始终按**上游 key** 隔离(与参考实现一致);直通记为 unmanaged。
 // getApiKey 为参考原实现(user_* 提取器),行为逐字保留。
 import { CFG } from './config.mjs';
-import { verifyClientKey, getUpstreamKeyById, touchUpstreamKey, listUpstreamKeys, findUpstreamKeyByApiKey } from './store/keys.mjs';
+import {
+  verifyClientKey, getUpstreamKeyById, touchUpstreamKey, listUpstreamKeys,
+  findUpstreamKeyByApiKey, getPinnedUpstreamKeyId,
+} from './store/keys.mjs';
 import { isWindowBlocked } from './protocol/window-state.mjs';
 
 function getApiKey(headers) {
@@ -27,7 +30,7 @@ function getApiKey(headers) {
 const AUTH_ERRORS = {
   invalid_client_key: 'Invalid or disabled client key (sk-ccp-*)',
   upstream_disabled: 'The upstream key bound to this client key is missing or disabled; no active upstream account is available',
-  upstream_unavailable: 'All active upstream accounts are temporarily unavailable or manually switched away',
+  upstream_unavailable: 'All active upstream accounts are temporarily unavailable',
   direct_disabled: 'Direct upstream keys (user_*) are disabled on this proxy; use a client key (sk-ccp-*)',
 };
 
@@ -35,11 +38,20 @@ export function authErrorMessage(error) {
   return AUTH_ERRORS[error] ?? 'Authentication failed';
 }
 
-/** 选择未受限的启用账号。排除整条重试链,绝不回退到手动切走的账号。 */
+/**
+ * 选择未受限的启用账号。优先级:管理界面固定(「切到此账号」)> 密钥绑定 > 列表顺序。
+ * 固定是偏好不是硬性:固定账号不可用(停用/耗尽/窗口受限/轮转已试过)时按后续
+ * 优先级兜底,恢复后自动回到固定账号。排除整个重试链。
+ */
 export async function selectUpstreamKey(preferredId, options = {}) {
   const skip = new Set(options.skipUpstreamIds ?? []);
   if (options.skipUpstreamId != null) skip.add(options.skipUpstreamId);
   const eligible = k => k && !skip.has(k.id) && !isWindowBlocked(k.id);
+  const pinnedId = await getPinnedUpstreamKeyId();
+  if (pinnedId != null) {
+    const pinned = await getUpstreamKeyById(pinnedId);
+    if (eligible(pinned)) return pinned;
+  }
   const preferred = await getUpstreamKeyById(preferredId);
   if (eligible(preferred)) return preferred;
   for (const k of await listUpstreamKeys()) {

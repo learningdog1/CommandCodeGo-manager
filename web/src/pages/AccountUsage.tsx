@@ -3,9 +3,9 @@
 // 支持单账号或全部刷新(快照接口纯读服务端缓存),点卡片展开期账全量明细。
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  Activity, ArrowRightLeft, CalendarClock, ChevronDown, Coins, Gauge, RefreshCw, Users, Wallet,
+  Activity, CalendarClock, ChevronDown, Coins, Gauge, Pin, PinOff, RefreshCw, Users, Wallet,
 } from 'lucide-react';
-import { fetchAccountUsage, refreshAccountUsage, switchAccount, type AccountUsageRow, type WindowLimit } from '../api';
+import { fetchAccountUsage, refreshAccountUsage, pinAccount, type AccountUsageRow, type WindowLimit } from '../api';
 import {
   Badge, Button, Card, CardBody, CardHeader, EmptyState, Loading, StatCard, toast, fmtAgo, fmtInt,
 } from '../ui';
@@ -171,22 +171,25 @@ export function AccountUsage() {
     }
   }, [mergeRows]);
 
-  // 手动切换账户:标记窗口受限 → 新请求自动落到其他账户;再点一次恢复
+  // 固定承接账户:点哪个账号,新请求就优先路由到它(高于密钥绑定,额度可用时);
+  // 取消固定恢复按绑定路由。全量行替换:旧固定行的徽标也要一起翻掉
   const [switchingId, setSwitchingId] = useState<number | null>(null);
-  const toggleSwitch = useCallback(async (r: AccountUsageRow) => {
+  const togglePin = useCallback(async (r: AccountUsageRow) => {
     if (switchingId != null) return; // 防抖:慢响应下双击会连发两次,第二次反转第一次
-    const on = r.windowState?.source !== 'manual';
+    const on = !r.pinned;
     setSwitchingId(r.id);
     try {
-      const res = await switchAccount(r.id, on);
-      mergeRows(res.rows ?? []);
-      toast('ok', on ? `已切走 ${r.name}:新请求优先使用 ${res.nextAccount?.name ?? '其他可用账号'};已在途请求继续完成` : `已取消手动切走:${r.name} 将在额度可用时参与路由`);
+      const res = await pinAccount(on ? r.id : null);
+      setRows(res.rows ?? []);
+      toast('ok', on
+        ? `已切换到 ${r.name}:新请求优先使用该账号,已在途请求继续完成`
+        : '已取消固定:恢复按客户端密钥绑定路由');
     } catch (e) {
       toast('err', `切换失败:${(e as Error).message}`);
     } finally {
       setSwitchingId(null);
     }
-  }, [mergeRows, switchingId]);
+  }, [switchingId]);
 
   // 初次进入:先读快照;存在启用账号但缓存全空时,自动触发一次全部刷新
   useEffect(() => {
@@ -281,9 +284,10 @@ export function AccountUsage() {
                               ? <Badge>已停用</Badge>
                               : !d ? (r.error ? <Badge kind="err">拉取失败</Badge> : <Badge>未刷新</Badge>)
                               : r.error ? <Badge kind="warn">部分失败</Badge> : null}
+                            {r.pinned && !disabled && <Badge kind="accent">固定中 · 承接流量</Badge>}
                             {r.windowState?.blocked && !disabled && (
-                              <Badge kind={r.windowState.source === 'manual' ? 'accent' : 'warn'}>
-                                {r.windowState.source === 'manual' ? '已手动切换' : '窗口受限·自动轮转中'}
+                              <Badge kind="warn">
+                                窗口受限 · 自动轮转中
                                 {r.windowState.until ? ` · ${fmtDuration(r.windowState.until - now)}后恢复` : ''}
                               </Badge>
                             )}
@@ -305,15 +309,15 @@ export function AccountUsage() {
                       <div className="flex shrink-0 items-center gap-1.5">
                         {!disabled && (
                           <Button size="sm"
-                            variant={r.windowState?.source === 'manual' ? 'primary' : 'default'}
+                            variant={r.pinned ? 'primary' : 'default'}
                             loading={switchingId === r.id}
                             disabled={switchingId != null && switchingId !== r.id}
-                            onClick={() => void toggleSwitch(r)}
-                            title={r.windowState?.source === 'manual'
-                              ? '取消手动切走:额度可用时重新参与请求路由'
-                              : '切走此账号:新请求使用其他可用账号,已在途请求继续完成'}>
-                            <ArrowRightLeft size={13} />
-                            {r.windowState?.source === 'manual' ? '恢复' : '切走'}
+                            onClick={() => void togglePin(r)}
+                            title={r.pinned
+                              ? '取消固定:恢复按客户端密钥绑定路由,额度不可用时自动轮转'
+                              : '切到此账号:新请求优先使用该账号(额度不可用时自动轮转到其他账号,恢复后回到该账号);已在途请求继续完成'}>
+                            {r.pinned ? <PinOff size={13} /> : <Pin size={13} />}
+                            {r.pinned ? '取消固定' : '切到此账号'}
                           </Button>
                         )}
                         <button

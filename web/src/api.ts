@@ -166,16 +166,17 @@ export interface AccountUsageData {
 export interface AccountUsageRow {
   id: number; name: string; status: string;
   fetchedAt: number | null; error: string | null; data: AccountUsageData | null;
-  windowState?: { blocked: boolean; source: 'live' | 'usage' | 'manual' | null; window: string | null; until: number | null };
+  pinned?: boolean;
+  windowState?: { blocked: boolean; source: 'live' | 'usage' | null; window: string | null; until: number | null };
 }
 
 export const fetchAccountUsage = () => api<{ rows: AccountUsageRow[] }>('/admin/api/account-usage');
 export const refreshAccountUsage = (id?: number) =>
   api<{ rows: AccountUsageRow[]; refreshed: number; failed: number }>('/admin/api/account-usage/refresh',
     { method: 'POST', body: id !== undefined ? { id } : {} });
-export const switchAccount = (id: number, on: boolean) =>
-  api<{ rows: AccountUsageRow[]; switched: 'away' | 'back'; nextAccount: { id: number; name: string } | null }>('/admin/api/account-usage/switch',
-    { method: 'POST', body: { id, on } });
+export const pinAccount = (id: number | null) =>
+  api<{ rows: AccountUsageRow[]; pinned: { id: number; name: string } | null }>('/admin/api/account-usage/pin',
+    { method: 'POST', body: { id } });
 
 export const fetchOverview = () => api<Overview>('/admin/api/overview');
 export const fetchLogs = (qs = '') => api<{ rows: RequestRow[]; total: number }>(`/admin/api/logs${qs}`);

@@ -27,11 +27,12 @@ const setStatus = (s, id, status) => fetch(s.proxy.base + `/admin/api/upstream-k
 });
 const auths = s => s.mock.seen.filter(r => r.url === '/alpha/generate').map(r => r.headers.authorization);
 
-test('manual switch: all three API routes and credential modes use B; restore uses A', async () => {
+test('pin: all three API routes and credential modes use B; unpin restores binding A', async () => {
   const s = await managed();
   try {
-    const result = await (await s.proxy.post('/admin/api/account-usage/switch', { id: 1, on: true })).json();
-    assert.deepEqual(result.nextAccount, { id: 2, name: 'Account 2' });
+    const result = await (await s.proxy.post('/admin/api/account-usage/pin', { id: 2 })).json();
+    assert.deepEqual(result.pinned, { id: 2, name: 'Account 2' });
+    assert.equal(result.rows.find(r => r.id === 2).pinned, true);
     for (const [path, body] of endpoints) {
       for (const headers of s.credentials) {
         const r = await s.proxy.post(path, body, headers);
@@ -43,7 +44,9 @@ test('manual switch: all three API routes and credential modes use B; restore us
     const logs = await (await s.proxy.get('/admin/api/logs')).json();
     assert.equal(logs.total, 9);
     assert.ok(logs.rows.every(r => r.upstream_key_id === 2 && r.upstream_name === 'Account 2'));
-    await s.proxy.post('/admin/api/account-usage/switch', { id: 1, on: false });
+    const unpinned = await (await s.proxy.post('/admin/api/account-usage/pin', { id: null })).json();
+    assert.equal(unpinned.pinned, null);
+    assert.ok(unpinned.rows.every(r => r.pinned === false));
     for (const headers of s.credentials) {
       const r = await s.proxy.post(...endpoints[0], headers);
       await r.text();
@@ -53,26 +56,24 @@ test('manual switch: all three API routes and credential modes use B; restore us
   } finally { await s.close(); }
 });
 
-test('manual switch: reject without alternative; never return to a switched-away account when backup disappears', async () => {
+test('pin: preference not outage — pinned account disabled falls back to binding; only account can be pinned; unknown id 404', async () => {
   const s = await managed();
   try {
+    assert.equal((await s.proxy.post('/admin/api/account-usage/pin', { id: 999 })).status, 404);
+    assert.equal((await s.proxy.post('/admin/api/account-usage/pin', { id: 2 })).status, 200);
     await setStatus(s, 2, 'disabled');
-    await setStatus(s, 3, 'disabled');
-    const rejected = await s.proxy.post('/admin/api/account-usage/switch', { id: 1, on: true });
-    assert.equal(rejected.status, 409);
-    const snap = await (await s.proxy.get('/admin/api/account-usage')).json();
-    assert.equal(snap.rows[0].windowState.blocked, false);
-    await setStatus(s, 2, 'active');
-    assert.equal((await s.proxy.post('/admin/api/account-usage/switch', { id: 1, on: true })).status, 200);
-    await setStatus(s, 2, 'disabled');
-    for (const [path, body] of endpoints) {
-      for (const headers of s.credentials) {
-        const r = await s.proxy.post(path, body, headers);
-        assert.equal(r.status, 429);
-        assert.equal((await r.json()).error.type, 'rate_limit_error');
-      }
+    for (const headers of s.credentials) {
+      const r = await s.proxy.post(...endpoints[0], headers);
+      await r.text();
+      assert.equal(r.status, 200);
+      assert.equal(s.mock.lastGenerate().headers.authorization, `Bearer ${keys[0]}`, '固定账号不可用时按绑定兜底,不产生硬性中断');
     }
-    assert.equal(s.mock.generateCount(), 0, 'manual block must never silently fall back');
+    // 唯一启用账号也能固定(固定是偏好,不需要「有替代账号」前提)
+    await setStatus(s, 3, 'disabled');
+    assert.equal((await s.proxy.post('/admin/api/account-usage/pin', { id: 1 })).status, 200);
+    const snap = await (await s.proxy.get('/admin/api/account-usage')).json();
+    assert.equal(snap.rows[0].pinned, true);
+    assert.equal(snap.rows[0].windowState.blocked, false);
   } finally { await s.close(); }
 });
 

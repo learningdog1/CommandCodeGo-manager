@@ -10,9 +10,8 @@ import { CFG } from '../config.mjs';
 import { log } from '../log.mjs';
 import { CC_VERSION } from './upstream.mjs';
 import { slugifyProjectPath, DEVICE_PROFILE } from './fingerprint.mjs';
-import { listUpstreamKeys, getUpstreamKeyById, renameUpstreamKey } from '../store/keys.mjs';
-import { syncFromWindowLimits, getWindowState, setManualSwitch } from './window-state.mjs';
-import { selectUpstreamKey } from '../auth.mjs';
+import { listUpstreamKeys, getUpstreamKeyById, renameUpstreamKey, getPinnedUpstreamKeyId, setPinnedUpstreamKeyId } from '../store/keys.mjs';
+import { syncFromWindowLimits, getWindowState } from './window-state.mjs';
 
 // 账户展示名:commandcode 账户名(userName)优先,退回邮箱前缀,再退回通用默认。
 // 导入与存量迁移都用它命名上游 key,避免一排「CommandCode CLI 登录」分不清谁是谁。
@@ -147,13 +146,15 @@ const cache = new Map();
 // 进行中的刷新去重:同一账号并发点刷新只发一串上游请求
 const inflight = new Map();
 
-function rowOf(key, entry) {
+function rowOf(key, entry, pinnedId) {
   return {
     id: key.id, name: key.name, status: key.status,
     fetchedAt: entry?.fetchedAt ?? null,
     error: entry?.error ?? null,
     data: entry?.data ?? null,
-    // 运行时窗口状态(轮转/手动切换的依据):live=请求侧 429 标记,usage=刷新同步,manual=手动切换
+    // 是否为「切到此账号」固定的承接账号(路由优先级最高,见 auth.mjs)
+    pinned: key.id === pinnedId,
+    // 运行时窗口状态(轮转的依据):live=请求侧 429 标记,usage=刷新同步
     windowState: getWindowState(key.id),
   };
 }
@@ -198,7 +199,8 @@ async function refreshKey(key) {
 /** 快照(纯读缓存,不发上游请求):所有上游 key + 各自缓存数据。 */
 export async function accountUsageSnapshot() {
   const keys = await listUpstreamKeys();
-  return { rows: keys.map(k => rowOf(k, cache.get(k.id))) };
+  const pinnedId = await getPinnedUpstreamKeyId();
+  return { rows: keys.map(k => rowOf(k, cache.get(k.id), pinnedId)) };
 }
 
 /**
@@ -206,12 +208,13 @@ export async function accountUsageSnapshot() {
  * 返回 { rows, refreshed, failed } 或 { notFound: true }(单账号不存在/已停用)。
  */
 export async function refreshAccountUsage(id) {
+  const pinnedId = await getPinnedUpstreamKeyId();
   if (id != null) {
     const key = await getUpstreamKeyById(id);
     if (!key) return { notFound: true };
     const { key: finalKey, entry } = await refreshKey(key);
     return {
-      rows: [rowOf(finalKey, entry)],
+      rows: [rowOf(finalKey, entry, pinnedId)],
       refreshed: entry.data ? 1 : 0,
       failed: entry.data ? 0 : 1,
     };
@@ -229,7 +232,7 @@ export async function refreshAccountUsage(id) {
     batch.forEach((k, j) => {
       const r = results[j];
       if (!r) return;
-      rows.push(rowOf(r.key, r.entry));
+      rows.push(rowOf(r.key, r.entry, pinnedId));
       if (r.entry.data) refreshed++; else failed++;
     });
   }
@@ -237,28 +240,23 @@ export async function refreshAccountUsage(id) {
 }
 
 /**
- * 手动切换账户(管理界面):on=true 把该账户的 5h/周窗口标记为受限(优先取已知的
- * resetAt,至少 1 小时),新请求自动落到其他未受限账户;on=false 立即恢复。
- * 返回更新后的行;账户不存在/已停用返回 { notFound: true }。
+ * 固定承接账户(管理界面「切到此账号」):id 非空时新请求优先使用该账户
+ * (高于客户端密钥绑定,持久化跨重启);额度/窗口不可用时按常规可用性规则
+ * 兜底,恢复后自动回到该账户。id=null 取消固定,恢复按绑定路由。
+ * 返回全量行与固定信息;账户不存在/已停用返回 { notFound: true }。
  */
-export async function switchAccount(id, on) {
-  const key = await getUpstreamKeyById(id);
-  if (!key) return { notFound: true };
-  let nextAccount = null;
-  if (on) {
-    const next = await selectUpstreamKey(null, { skipUpstreamId: id });
-    if (!next) return { noAlternative: true };
-    nextAccount = { id: next.id, name: next.name };
-    const w = cache.get(id)?.data?.windowLimits;
-    const reset = Math.max(
-      w?.fiveHour?.resetAt ?? 0,
-      w?.weekly?.resetAt ?? 0,
-    );
-    setManualSwitch(id, true, reset > Date.now() ? reset : 0);
+export async function pinAccount(id) {
+  if (id != null) {
+    const key = await getUpstreamKeyById(id);
+    if (!key) return { notFound: true };
+    await setPinnedUpstreamKeyId(id);
+    log('info', 'Account pinned for routing', { upstreamKeyId: id });
   } else {
-    setManualSwitch(id, false);
+    await setPinnedUpstreamKeyId(null);
+    log('info', 'Account pin cleared');
   }
-  return { rows: [rowOf(key, cache.get(id))], switched: on ? 'away' : 'back', nextAccount };
+  const { rows } = await accountUsageSnapshot();
+  return { rows, pinned: id != null ? (rows.find(r => r.id === id) ? { id, name: rows.find(r => r.id === id).name } : null) : null };
 }
 
 // ── 自动定时刷新 ───────────────────────────────────────────

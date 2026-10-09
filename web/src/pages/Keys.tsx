@@ -167,7 +167,7 @@ function UpstreamPanel({ rows, clients, reload }: {
             (网页后台 → API keys 复制,名称自动取账户名);也可用 CLI 登录后「一键导入」
           </div>
           <div className="min-w-56 flex-1">
-            <span className="text-txt">自动轮转:</span>harness 用客户端密钥(sk-ccp-*)接入时,绑定账户额度耗尽(402)自动切换其他启用账户并当场重试;耗尽的标记为黄色,额度重置后点「重新启用」
+            <span className="text-txt">自动轮转:</span>harness 用客户端密钥(sk-ccp-*)接入时,优先用「账号用量」页固定的承接账号,其次绑定账户;额度耗尽(402)自动切换其他启用账户并当场重试,耗尽的标记为黄色,额度重置后点「重新启用」
           </div>
         </div>
         {rows && rows.length > 0 && (
@@ -442,7 +442,7 @@ function ClientPanel({ rows, ups, reload }: {
           </Field>
           <Field label="绑定上游密钥" hint={activeUps.length === 0
             ? '暂无已启用的上游密钥,请先添加并启用'
-            : '绑定优先;该密钥额度耗尽时自动切换其他已启用的上游密钥'}>
+            : '「账号用量」页固定了承接账号时以固定为准;否则绑定优先,额度耗尽时自动切换其他已启用的上游密钥'}>
             <Select value={upstreamId} onChange={e => setUpstreamId(e.target.value)} disabled={activeUps.length === 0}>
               {activeUps.length === 0 && <option value="">无可用上游</option>}
               {activeUps.map(k => <option key={k.id} value={String(k.id)}>{k.name}</option>)}
