@@ -2,7 +2,7 @@
 // 唯一适配:consecutiveTimeouts → timeoutStats.consecutive(见 src/protocol/upstream.mjs)。
 import { randomUUID } from 'crypto';
 import { resolveUpstreamKey, authErrorMessage } from '../auth.mjs';
-import { buildCcRequest } from '../protocol/envelope.mjs';
+import { buildCcRequest, unsupportedResponseFormatError } from '../protocol/envelope.mjs';
 import { readBody } from '../http/body.mjs';
 import { waitDrain } from '../http/drain.mjs';
 import { createIdleWatchdog } from '../http/idle.mjs';
@@ -198,6 +198,16 @@ async function handleChatCompletions(req, res) {
       return;
     }
     sendJSON(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request_error' } });
+    return;
+  }
+
+  // 结构化输出约束(json_object / json_schema)无法送达 CC 上游 —— 明确 400 而不是
+  // 静默丢弃后返回 200,让客户端的降级分支(改走提示词软路径)能被触发(issue #10)。
+  // {"type":"text"} 不构成约束,放行。
+  const rfError = unsupportedResponseFormatError(openaiReq.response_format, 'response_format');
+  if (rfError) {
+    log('warn', 'Rejected response_format', { type: openaiReq.response_format?.type, path: '/v1/chat/completions', model: openaiReq.model });
+    sendJSON(res, 400, rfError);
     return;
   }
 

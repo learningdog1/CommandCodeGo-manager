@@ -303,6 +303,13 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:3050/v1", api_key="sk-ccp-xxxx")
 ```
 
+> **结构化输出兼容性**(`response_format` / `text.format`):上游是 agent 式接口,
+> 协议里没有结构化输出字段,`json_object` / `json_schema` 约束无法送达。代理对这两类
+> 请求返回 **400**(`invalid_request_error`,带 `param`),而不是静默忽略后照常 200 ——
+> 客户端的降级分支(收到 400 后改走「schema 拼进提示词」的软路径)可以正常触发;
+> `{"type":"text"}` 是缺省无约束形态,直接放行。需要结构化输出时,请把 JSON 形态
+> (必要时含 schema)写进提示词自行约束。
+
 ### Claude Code(Anthropic 协议)
 
 ```bash

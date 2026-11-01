@@ -3,7 +3,7 @@
 import { randomUUID } from 'crypto';
 import { resolveUpstreamKey, authErrorMessage } from '../auth.mjs';
 import { handleChatCompletions } from './chat.mjs';
-import { buildCcRequest } from '../protocol/envelope.mjs';
+import { buildCcRequest, unsupportedResponseFormatError } from '../protocol/envelope.mjs';
 import { readBody } from '../http/body.mjs';
 import { waitDrain } from '../http/drain.mjs';
 import { createIdleWatchdog } from '../http/idle.mjs';
@@ -229,8 +229,8 @@ function buildResponsesObject(responseId, model, created, fullText, thinkingText
   };
 }
 
-function sendResponsesError(res, status, type, message, retryAfter) {
-  const body = { error: { message, type, code: null, param: null } };
+function sendResponsesError(res, status, type, message, retryAfter, param) {
+  const body = { error: { message, type, code: null, param: param ?? null } };
   if (retryAfter !== undefined) body.retry_after = retryAfter;
   sendJSON(res, status, body);
 }
@@ -456,6 +456,16 @@ async function handleResponses(req, res) {
   if (respReq.previous_response_id) {
     sendResponsesError(res, 400, 'invalid_request_error',
       'previous_response_id is not supported (this proxy is stateless); send the full input each turn');
+    return;
+  }
+
+  // text.format 的 json_object / json_schema 同样无法送达 CC 上游(issue #10 的
+  // Responses 侧):与 previous_response_id 一样明确 400,不静默降级成自然语言。
+  // {type:'text'} 是缺省形态,放行。
+  const rfError = unsupportedResponseFormatError(respReq.text?.format, 'text.format');
+  if (rfError) {
+    log('warn', 'Rejected text.format', { type: respReq.text?.format?.type, path: '/v1/responses', model: respReq.model });
+    sendResponsesError(res, 400, rfError.error.type, rfError.error.message, undefined, rfError.error.param);
     return;
   }
 

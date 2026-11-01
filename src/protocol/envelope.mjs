@@ -4,6 +4,28 @@ import { DEVICE_PROFILE } from './fingerprint.mjs';
 import { getDateStr } from '../util.mjs';
 // ── CC 请求体构建 ─────────────────────────────────
 
+// ── response_format / text.format 支持性判定 ─────────
+// CC 上游是 agent 式接口(command-code CLI 信封),params 没有结构化输出字段,
+// json_object / json_schema 约束根本无法送达。此前静默丢弃 + 返回 200,客户端
+// 误以为拿到了受约束的 JSON(issue #10)。改为明确 400:OpenAI 生态客户端普遍
+// 对「400 + param」有降级分支(收到后改走提示词软路径),比静默吞掉友好得多。
+// {"type":"text"} 是缺省形态、不构成约束,放行(忽略即正确语义)。
+// 返回 OpenAI 风格 error body;可受理则返回 null。param 用调用方传入的字段名
+// (chat 路由是 "response_format",Responses 路由是 "text.format")。
+function unsupportedResponseFormatError(responseFormat, param) {
+  if (!responseFormat || typeof responseFormat !== 'object') return null;
+  const type = responseFormat.type;
+  if (type === undefined || type === null || type === 'text') return null; // 无约束,等价缺省
+  return {
+    error: {
+      message: `${param} is not supported: the upstream agent protocol has no structured-output field, so '${type}' constraints would be silently ignored. Constrain the output format in the prompt instead.`,
+      type: 'invalid_request_error',
+      param,
+      code: null,
+    },
+  };
+}
+
 function buildCcRequest(openaiReq) {
   const { model, messages, max_tokens, temperature, tools, stream, reasoning_effort, tool_choice, parallel_tool_calls, prompt_cache_key } = openaiReq;
 
@@ -215,4 +237,4 @@ function tryParseJSON(str) {
   try { return JSON.parse(str); } catch { return {}; }
 }
 
-export { buildCcRequest, toWireToolName, toWireToolOutputValue, tryParseJSON };
+export { buildCcRequest, unsupportedResponseFormatError, toWireToolName, toWireToolOutputValue, tryParseJSON };
