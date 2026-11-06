@@ -11,7 +11,7 @@ import { log } from '../log.mjs';
 import { CC_VERSION } from './upstream.mjs';
 import { slugifyProjectPath, DEVICE_PROFILE } from './fingerprint.mjs';
 import { listUpstreamKeys, getUpstreamKeyById, renameUpstreamKey, getPinnedUpstreamKeyId, setPinnedUpstreamKeyId } from '../store/keys.mjs';
-import { syncFromWindowLimits, getWindowState } from './window-state.mjs';
+import { syncFromWindowLimits, syncFromCredits, getWindowState } from './window-state.mjs';
 
 // 账户展示名:commandcode 账户名(userName)优先,退回邮箱前缀,再退回通用默认。
 // 导入与存量迁移都用它命名上游 key,避免一排「CommandCode CLI 登录」分不清谁是谁。
@@ -175,6 +175,7 @@ async function refreshKey(key) {
     cache.set(key.id, entry);
     // 窗口状态与用量数据同步:到顶 → 标记到 resetAt;已释放 → 清除(live 标记随之收敛)
     syncFromWindowLimits(key.id, entry.data?.windowLimits ?? null);
+    syncFromCredits(key.id, entry.data ?? null);
     // 默认名迁移:导入时未取到账户名的 key,拿到 whoami 后按 commandcode 账户名重命名
     // (用户自定义的名称不动 —— 只认两条默认名)
     let out = key;

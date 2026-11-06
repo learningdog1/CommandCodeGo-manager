@@ -46,7 +46,9 @@ export function authErrorMessage(error) {
 export async function selectUpstreamKey(preferredId, options = {}) {
   const skip = new Set(options.skipUpstreamIds ?? []);
   if (options.skipUpstreamId != null) skip.add(options.skipUpstreamId);
-  const eligible = k => k && !skip.has(k.id) && !isWindowBlocked(k.id);
+  // status 必须一起判:固定/绑定只是偏好,不能把已停用或已落库 exhausted 的账户
+  // 硬塞回轮转链 —— 旧实现漏了这一项,锁定一个耗尽账户就等于永远不再换。
+  const eligible = k => k && k.status === 'active' && !skip.has(k.id) && !isWindowBlocked(k.id);
   const pinnedId = await getPinnedUpstreamKeyId();
   if (pinnedId != null) {
     const pinned = await getUpstreamKeyById(pinnedId);
@@ -55,7 +57,7 @@ export async function selectUpstreamKey(preferredId, options = {}) {
   const preferred = await getUpstreamKeyById(preferredId);
   if (eligible(preferred)) return preferred;
   for (const k of await listUpstreamKeys()) {
-    if (k.status !== 'active' || !eligible(k)) continue;
+    if (!eligible(k)) continue;
     const full = await getUpstreamKeyById(k.id);
     if (eligible(full)) return full;
   }
