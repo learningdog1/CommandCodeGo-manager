@@ -53,6 +53,22 @@ jobs:
           # 无签名证书:mac 走 ad-hoc,win 跳过签名
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      # 4) 便携版自动更新包(issue #11):win-unpacked 整包打 zip,命名与
+      #    desktop/updater.cjs 的 pickAsset 约定一致(Update-<版本>-<架构>.zip)。
+      #    覆盖式替换跳过 data 目录,升级不动用户数据。
+      - name: Package update archives (win)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = (Get-Content desktop/package.json | ConvertFrom-Json).version
+          foreach ($arch in 'x64', 'arm64') {
+            $src = if ($arch -eq 'x64') { 'release/win-unpacked' } else { "release/win-$arch-unpacked" }
+            if (Test-Path $src) {
+              Compress-Archive -Path "$src/*" -DestinationPath "release/CommandCodeGo.Manager-Update-$v-$arch.zip" -Force
+            }
+          }
+          Get-ChildItem release/*.zip | Select-Object Name, Length
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -61,6 +77,7 @@ jobs:
             release/*.dmg
             release/*.exe
             release/*-mac.zip
+            release/*-Update-*.zip
           retention-days: 30
 
   # tag 推送时:汇总两平台产物,创建 GitHub Release 并挂载安装包
@@ -86,6 +103,6 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            artifacts/*.dmg artifacts/*.exe artifacts/*-mac.zip \
+            artifacts/*.dmg artifacts/*.exe artifacts/*-mac.zip artifacts/*-Update-*.zip \
           || gh release upload "${GITHUB_REF_NAME}" \
-            artifacts/*.dmg artifacts/*.exe artifacts/*-mac.zip --clobber
+            artifacts/*.dmg artifacts/*.exe artifacts/*-mac.zip artifacts/*-Update-*.zip --clobber

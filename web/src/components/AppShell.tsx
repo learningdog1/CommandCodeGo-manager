@@ -2,11 +2,12 @@
 // H2:顶栏为窗口拖动区(macOS hiddenInset 无系统标题栏,Web 侧提供 drag);
 // 顶栏内的交互控件(主题切换)需显式 no-drag 才可点击。
 import { useEffect, useRef, useState } from 'react';
-import { NavLink, useLocation, useOutlet } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate, useOutlet } from 'react-router-dom';
 import {
-  Terminal, LayoutDashboard, ScrollText, BarChart3, Boxes, KeyRound, Fingerprint, Settings, Users,
+  Terminal, LayoutDashboard, ScrollText, BarChart3, Boxes, KeyRound, Fingerprint, Settings, Users, ArrowUpCircle, X,
 } from 'lucide-react';
 import { fetchOverview, setAdminToken, type ApiError, type Overview } from '../api';
+import { desktop, type DesktopUpdateState } from '../desktop';
 import { ThemeToggle, toast } from '../ui';
 
 const NAV_GROUPS: { title: string; items: { to: string; label: string; icon: typeof LayoutDashboard; end: boolean }[] }[] = [
@@ -112,6 +113,46 @@ function TokenGate({ onRetry }: { onRetry: () => void }) {
           {busy ? '验证中…' : '进入管理界面'}
         </button>
       </div>
+    </div>
+  );
+}
+
+// 新版本提示条(issue #11):桌面版自动检查到新版本时出现在顶栏下方,
+// 只提示不动作(下载/重启都在设置页由用户确认);每个版本可手动关闭一次。
+const DISMISS_KEY = 'ccp-update-dismissed';
+function UpdateBanner() {
+  const navigate = useNavigate();
+  const [st, setSt] = useState<DesktopUpdateState | null>(null);
+  const [dismissed, setDismissed] = useState(() => localStorage.getItem(DISMISS_KEY) ?? '');
+  useEffect(() => {
+    if (!desktop) return;
+    let alive = true;
+    desktop.getUpdateState().then(s => { if (alive) setSt(s); }).catch(() => {});
+    const off = desktop.onUpdateState(s => {
+      if (s.updatedTo) { localStorage.removeItem(DISMISS_KEY); setDismissed(''); }
+      setSt(s);
+    });
+    return () => { alive = false; off(); };
+  }, []);
+  const show = st
+    && ['available', 'ready'].includes(st.status)
+    && st.latestVersion && st.latestVersion !== dismissed;
+  if (!show) return null;
+  return (
+    <div className="flex h-9 shrink-0 items-center gap-2 border-b border-accent/25 bg-accent-dim px-5 text-xs text-txt">
+      <ArrowUpCircle size={14} className="shrink-0 text-accent" />
+      <span className="truncate">发现新版本 <span className="tnum font-semibold">v{st!.latestVersion}</span>
+        (当前 v{st!.currentVersion}),仅提示、不会自动更新</span>
+      <button
+        onClick={() => navigate('/settings')}
+        className="ml-1 shrink-0 rounded border border-accent/40 px-2 py-0.5 font-medium text-accent transition-colors hover:bg-accent/10">
+        前往更新
+      </button>
+      <button
+        onClick={() => { localStorage.setItem(DISMISS_KEY, st!.latestVersion!); setDismissed(st!.latestVersion!); }}
+        className="ml-auto shrink-0 rounded p-1 text-txt3 transition-colors hover:bg-panel2 hover:text-txt" title="本次忽略">
+        <X size={13} />
+      </button>
     </div>
   );
 }
@@ -227,6 +268,8 @@ export function AppShell() {
             <ThemeToggle />
           </span>
         </header>
+
+        {desktop && <UpdateBanner />}
 
         <main className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="mx-auto max-w-6xl">
