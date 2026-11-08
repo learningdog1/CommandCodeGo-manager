@@ -25,7 +25,9 @@
       "buildResources": "build"
     },
     "files": [
-      "main.cjs"
+      "main.cjs",
+      "preload.cjs",
+      "updater.cjs"
     ],
     "extraResources": [
       {

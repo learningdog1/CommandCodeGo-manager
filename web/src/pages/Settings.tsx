@@ -2,6 +2,8 @@
 // 数字字段在表单里保留字符串,保存时再解析;校验不通过禁用保存。
 import { useEffect, useMemo, useState } from 'react';
 import { fetchSettings, putSettings, type Settings } from '../api';
+import { desktop } from '../desktop';
+import { UpdateCard } from '../components/UpdateCard';
 import {
   Badge, Button, Card, CardBody, CardHeader, Dialog, Field, Input, Loading, Select, toast,
 } from '../ui';
@@ -177,6 +179,13 @@ export function Settings() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
+        {/* ── 软件更新(仅桌面版,桥不存在则整卡退隐) ── */}
+        {desktop && (
+          <div className="lg:col-span-2">
+            <UpdateCard />
+          </div>
+        )}
+
         {/* ── 服务 ── */}
         <Card>
           <CardHeader title="服务" extra={<span className="text-xs text-txt3">重启后生效</span>} />

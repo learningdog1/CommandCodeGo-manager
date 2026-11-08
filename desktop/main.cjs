@@ -2,12 +2,13 @@
 // 职责:单实例 → 端口扫描 → 以子进程(ELECTRON_RUN_AS_NODE)
 // 启动反代服务(esbuild 单文件 bundle)→ 等 /health → 打开管理界面窗口 + 托盘常驻。
 // 服务与界面代码与命令行版完全同一份产物,桌面壳只做进程管理与窗口。
-const { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, nativeImage, Notification, shell, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
+const { createUpdater } = require('./updater.cjs');
 
 const isSmoke = process.argv.includes('--smoke');
 const PRODUCT = 'CommandCodeGo Manager';
@@ -151,6 +152,8 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // 桌面版专有能力(更新检查等)经 preload 暴露;纯 Web/容器部署无此桥
+      preload: path.join(__dirname, 'preload.cjs'),
     },
   });
   // 关窗 = 隐藏到托盘,服务保持运行(托盘「退出」才真正结束)
@@ -182,14 +185,87 @@ function createTray(uiHost, port) {
   if (!existsSync(iconPath)) return;
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
   tray = new Tray(icon);
-  tray.setToolTip(PRODUCT);
+  refreshTrayMenu();
+  tray.on('click', () => (win && !win.isDestroyed() ? (win.isVisible() ? win.focus() : win.show()) : showWindow(uiHost, port)));
+  // Windows 气泡点击 = 查看新版本 → 打开管理界面(设置页有更新卡片)
+  tray.on('balloon-click', () => showWindow(uiHost, port));
+}
+
+// ── 更新(issue #11)────────────────────────────────────────
+// 只提示不静默替换:检查/下载/重启更新全部由用户在界面上确认,
+// 托盘仅展示状态与入口;自动检查失败一律静默(不打扰、不弹框)。
+let updater = null;
+let trayCtx = { uiHost: '127.0.0.1', port: 3050 };
+
+function refreshTrayMenu() {
+  if (!tray || tray.isDestroyed()) return;
+  const { uiHost, port } = trayCtx;
+  const st = updater?.state;
+  const busy = st && ['checking', 'downloading', 'applying'].includes(st.status);
+  const hasNew = st && ['available', 'downloading', 'ready'].includes(st.status);
+  const verLabel = hasNew
+    ? `发现新版本 v${st.latestVersion}(当前 v${st.currentVersion})`
+    : `当前版本 v${st?.currentVersion ?? app.getVersion()}${st?.status === 'uptodate' ? ',已是最新' : ''}`;
+  tray.setToolTip(`${PRODUCT} v${st?.currentVersion ?? app.getVersion()}${hasNew ? ' — 有新版本' : ''}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开管理界面', click: () => showWindow(uiHost, port) },
     { label: `服务地址 http://${uiHost}:${port}`, enabled: false },
     { type: 'separator' },
+    ...(updater ? [
+      { label: verLabel, enabled: false },
+      { label: busy ? (st.status === 'downloading' ? `下载中 ${Math.round((st.progress ?? 0) * 100)}%` : '更新处理中…') : '检查更新',
+        enabled: !busy, click: () => { updater.check(true).catch(() => {}); showWindow(uiHost, port); } },
+    ] : []),
+    { type: 'separator' },
     { label: '退出', click: () => { app.isQuitting = true; app.quit(); } },
   ]));
-  tray.on('click', () => (win && !win.isDestroyed() ? (win.isVisible() ? win.focus() : win.show()) : showWindow(uiHost, port)));
+}
+
+function broadcastUpdate(state) {
+  if (win && !win.isDestroyed()) {
+    try { win.webContents.send('ccp:update-state-changed', state); } catch { /* 窗口尚未加载完成 */ }
+  }
+  refreshTrayMenu();
+}
+
+function spawnDetached(cmd, args) {
+  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+  // 启动失败(ENOENT 等)是异步 'error':不挂监听会变成主进程未捕获异常
+  child.on('error', e => console.error(`[updater] 助手进程启动失败: ${e.message}`));
+  child.unref();
+  return child;
+}
+
+// 更新完成的一次性提示:广播可能早于页面加载(splash 期),先存起来,
+// 界面第一次 getUpdateState 时带上;60s 后不再提
+let bootUpdatedTo = null;
+
+function setupUpdater() {
+  updater = createUpdater({
+    app,
+    notify: broadcastUpdate,
+    getLogger: () => (msg) => console.log(`[updater] ${msg}`),
+    spawnDetached,
+    quitApp: () => { app.isQuitting = true; stopServer(); app.quit(); },
+    shellShowItem: p => shell.showItemInFolder(p),
+    onUpdateAvailable: (latest, url) => {
+      // 自动检查发现新版:气泡/系统通知点开即进管理界面(设置页有完整更新卡片)
+      if (process.platform === 'win32' && tray && !tray.isDestroyed()) {
+        tray.displayBalloon({ iconType: 'info', title: PRODUCT, content: `发现新版本 v${latest},点击查看更新说明` });
+      } else if (Notification.isSupported()) {
+        const n = new Notification({ title: `${PRODUCT} 有新版本`, body: `v${latest} 已发布,点击查看更新说明` });
+        n.on('click', () => { if (trayCtx) showWindow(trayCtx.uiHost, trayCtx.port); });
+        n.show();
+      }
+    },
+  });
+  ipcMain.handle('ccp:update-state', () => ({ ...updater.state, updatedTo: bootUpdatedTo ?? undefined }));
+  ipcMain.handle('ccp:update-check', () => updater.check(true));
+  ipcMain.handle('ccp:update-download', () => updater.download());
+  ipcMain.handle('ccp:update-apply', () => updater.apply());
+  ipcMain.handle('ccp:update-reveal', () => updater.revealDownloaded());
+  ipcMain.handle('ccp:update-open-release', () => shell.openExternal(updater.releasePage));
+  updater.startAutoCheck(); // 打包后:启动 30s 首查 + 每 6h 轮询,全部静默
 }
 
 function setupMenu() {
@@ -237,6 +313,9 @@ async function bootstrap() {
   const uiHost = uiHostOf(host);          // 窗口/探活连接地址(通配 → 127.0.0.1)
   const port = await pickPort(host);
   serverPort = port;
+  trayCtx = { uiHost, port };
+  // 更新状态在托盘菜单里展示,先于托盘建好
+  const pendingUpdate = updater ? updater.readPending() : null; // 刚做完更新?健康门见下
   startServer(port, host);
   await waitHealthy(uiHost, port);
 
@@ -246,15 +325,38 @@ async function bootstrap() {
     return;
   }
 
+  // 更新后首次启动:/health 已就绪 → 清标记/回滚备份,界面提示已更新。
+  // 只有「正在运行的版本 == 目标版本」才算成功(pending 残留而版本没变
+  // = 上次更新被回滚/中断,不提示)
+  if (pendingUpdate) {
+    const to = updater.confirmBootOk();
+    if (to && to === app.getVersion()) {
+      bootUpdatedTo = to;
+      setTimeout(() => { bootUpdatedTo = null; }, 60_000).unref?.();
+      broadcastUpdate({ ...updater.state, updatedTo: to });
+    }
+  }
+
   createTray(uiHost, port);
   // 窗口可能已被用户关掉(隐藏)甚至销毁,loadURL 前判活
   if (win && !win.isDestroyed()) { appLoaded = true; win.loadURL(`http://${uiHost}:${port}/`); }
 }
 
 app.whenReady().then(() => {
+  setupUpdater();
   bootstrap().catch(err => {
     console.error('启动失败:', err);
     if (isSmoke) { console.error('SMOKE-FAIL', err.message); app.exit(1); return; }
+    // 更新后的启动失败:回滚到备份的旧版再拉起(尽力而为,见 updater.cjs)
+    const pending = updater?.readPending();
+    if (pending) {
+      const msg = updater.rollbackNow(pending, String(err.message || err));
+      stopServer();
+      if (msg === null) { app.exit(1); return; } // 回滚助手会拉起旧版
+      dialog.showErrorBox('更新后启动失败', `${msg}\n\n原始错误:${err.message}`);
+      app.exit(1);
+      return;
+    }
     dialog.showErrorBox('启动失败', String(err.message || err));
     app.exit(1);
   });
