@@ -52,6 +52,10 @@ jobs:
         env:
           # 无签名证书:mac 走 ad-hoc,win 跳过签名
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # electron 二进制改走 npmmirror 镜像:GitHub CDN 对 electron 发行包
+          # 偶发持续 504(v0.2.15 发版 2026-11-08 连续三跑全挂,npm postinstall
+          # 与 electron-builder 的 app-builder 都认这个变量)
+          ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/'
 
       # 4) 便携版自动更新包(issue #11):win-unpacked 整包打 zip,命名与
       #    desktop/updater.cjs 的 pickAsset 约定一致(Update-<版本>-<架构>.zip)。
