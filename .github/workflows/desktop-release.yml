@@ -68,10 +68,18 @@ jobs:
         shell: pwsh
         run: |
           $v = (Get-Content desktop/package.json | ConvertFrom-Json).version
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
           foreach ($arch in 'x64', 'arm64') {
             $src = if ($arch -eq 'x64') { 'release/win-unpacked' } else { "release/win-$arch-unpacked" }
             if (Test-Path $src) {
-              Compress-Archive -Path "$src/*" -DestinationPath "release/CommandCodeGo.Manager-Update-$v-$arch.zip" -Force
+              $dst = "release/CommandCodeGo.Manager-Update-$v-$arch.zip"
+              # Compress-Archive 对非 ASCII 条目名(使用说明.txt)不写 UTF-8 标志,
+              # Windows PowerShell 5.1 的 Expand-Archive 解出来文件名乱码;
+              # ZipFile 显式 UTF-8 条目编码会带上语言标志,任意代码页下都正确
+              [IO.Compression.ZipFile]::CreateFromDirectory(
+                (Resolve-Path $src), $dst,
+                [IO.Compression.CompressionLevel]::Optimal, $false,
+                [Text.Encoding]::UTF8)
             }
           }
           Get-ChildItem release/*.zip | Select-Object Name, Length

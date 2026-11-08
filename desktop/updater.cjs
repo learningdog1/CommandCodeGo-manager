@@ -94,7 +94,11 @@ function pickAsset(release, platform, arch, productName, installForm = 'portable
     // NSIS 形态首选 Setup,资产缺失时也能退化用 zip 覆盖(同为文件替换)。
     hit = installForm === 'nsis' ? (setup() ?? zip()) : (zip() ?? null);
   } else if (platform === 'darwin') {
-    hit = find(new RegExp(`^${esc}-.+-${arch}-mac\\.zip$`));
+    // electron-builder 的 mac zip 命名:arm64 带架构后缀,x64 不带
+    // (v0.2.15 实测:…-0.2.15-arm64-mac.zip 与 …-0.2.15-mac.zip 并存)
+    hit = arch === 'arm64'
+      ? find(new RegExp(`^${esc}-.+-arm64-mac\\.zip$`))
+      : find(new RegExp(`^${esc}-(?!.*-arm64).+(?:-x64)?-mac\\.zip$`));
     if (hit) hit.kind = 'mac-zip';
   }
   return hit;

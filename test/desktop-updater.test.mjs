@@ -39,7 +39,7 @@ const RELEASE = {
     { name: 'CommandCodeGo.Manager-Setup-0.2.15-arm64.exe', size: 88_000_000, digest: '' },
     { name: 'CommandCodeGo.Manager-Update-0.2.15-x64.zip', size: 92_000_000, digest: 'sha256:' + 'c'.repeat(64) },
     { name: 'CommandCodeGo.Manager-0.2.15-arm64-mac.zip', size: 100_000_000, digest: 'sha256:' + 'd'.repeat(64) },
-    { name: 'CommandCodeGo.Manager-0.2.15-x64-mac.zip', size: 101_000_000, digest: 'sha256:' + 'e'.repeat(64) },
+    { name: 'CommandCodeGo.Manager-0.2.15-mac.zip', size: 101_000_000, digest: 'sha256:' + 'e'.repeat(64) },
   ],
 };
 const assetNamed = (r, name) => r.assets.find(a => a.name === name);
@@ -65,9 +65,12 @@ test('pickAsset:windows arm64 不串到 x64 资产', () => {
   assert.equal(nsis.digest, ''); // 无 digest → 下载时跳过校验并提示
 });
 
-test('pickAsset:mac 按架构选 -mac.zip', () => {
+test('pickAsset:mac 按架构选 -mac.zip(x64 无架构后缀,arm64 有)', () => {
   assert.equal(pickAsset(RELEASE, 'darwin', 'arm64', 'CommandCodeGo Manager').name, 'CommandCodeGo.Manager-0.2.15-arm64-mac.zip');
-  assert.equal(pickAsset(RELEASE, 'darwin', 'x64', 'CommandCodeGo Manager').name, 'CommandCodeGo.Manager-0.2.15-x64-mac.zip');
+  assert.equal(pickAsset(RELEASE, 'darwin', 'x64', 'CommandCodeGo Manager').name, 'CommandCodeGo.Manager-0.2.15-mac.zip');
+  // arm64 机器绝不能配到无后缀的 x64 包
+  const x64Only = { assets: [assetNamed(RELEASE, 'CommandCodeGo.Manager-0.2.15-mac.zip')] };
+  assert.equal(pickAsset(x64Only, 'darwin', 'arm64', 'CommandCodeGo Manager'), null);
 });
 
 test('pickAsset:缺资产/空 release/其它平台返回 null', () => {
@@ -106,7 +109,7 @@ function makeReleaseAssets(version) {
   const list = [
     { name: `${pnDot}-Setup-${version}-${arch}.exe` },
     { name: `${pnDot}-Update-${version}-${arch}.zip` },
-    { name: `${pnDot}-${version}-${arch}-mac.zip` },
+    { name: arch === 'x64' ? `${pnDot}-${version}-mac.zip` : `${pnDot}-${version}-${arch}-mac.zip` },
   ];
   return list;
 }
