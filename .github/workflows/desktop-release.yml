@@ -56,6 +56,9 @@ jobs:
           # 偶发持续 504(v0.2.15 发版 2026-11-08 连续三跑全挂,npm postinstall
           # 与 electron-builder 的 app-builder 都认这个变量)
           ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/'
+          # electron-builder 辅助二进制(winCodeSign/nsis 等)同理走镜像,
+          # 同日 winCodeSign-2.6.0.7z 从 GitHub 拉 503、自带重试 4 次全挂
+          ELECTRON_BUILDER_BINARIES_MIRROR: 'https://npmmirror.com/mirrors/electron-builder-binaries/'
 
       # 4) 便携版自动更新包(issue #11):win-unpacked 整包打 zip,命名与
       #    desktop/updater.cjs 的 pickAsset 约定一致(Update-<版本>-<架构>.zip)。
