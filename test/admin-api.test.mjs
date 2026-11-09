@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setup } from './helpers.mjs';
@@ -226,7 +227,8 @@ test('admin:models/refresh —— 无上游密钥时回落内置清单并说明�
 });
 
 test('admin:cc-cli —— 检测 CLI 登录凭证并一键导入(掩码/查重/按账户名命名)', async () => {
-  const fakeAuth = join('/tmp', `ccp-fake-auth-${process.pid}.json`);
+  // 不能写死 /tmp:Windows 上解析到不存在的 C:\tmp,writeFileSync 直接 ENOENT
+  const fakeAuth = join(tmpdir(), `ccp-fake-auth-${process.pid}.json`);
   writeFileSync(fakeAuth, JSON.stringify({
     oauth: { access_token: 'irrelevant' },
     keys: { api: 'user_cli_login_abcd1234efgh5678' },
