@@ -194,6 +194,15 @@ test('peekEarlyError:命中即报错,正常流立刻放行,且不改动原响应
   assert.equal(await peekEarlyError(normal), null, '见到正文事件立刻放行,不吞内容');
   assert.match(await normal.text(), /text-delta/, '原响应体未被消费');
 
+  // thinking 模型:reasoning 事件同样是「正文已开始」,不能扣满 3s 预算才放行
+  // (回归:CONTENT_STARTED 曾漏了本协议的 reasoning-start/reasoning-delta,
+  //  推理先行的流首字节被扣满 3s)
+  const think = sse(['{"type":"start"}\n', '{"type":"start-step"}\n', '{"type":"reasoning-start"}\n']);
+  const t0 = Date.now();
+  assert.equal(await peekEarlyError(think), null, 'reasoning-start 立刻放行');
+  assert.ok(Date.now() - t0 < 500, '几乎立即返回,不吃满预算');
+  assert.match(await think.text(), /reasoning-start/, '原响应体未被消费');
+
   const plain = new Response('{"id":"a","choices":[{"message":{"content":"quota"}}]}', { status: 200 });
   assert.equal(await peekEarlyError(plain), null);
 });

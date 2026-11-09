@@ -10,8 +10,10 @@ import { ERROR_MARKER } from './window-state.mjs';
 // 上游整个沉默时最多等 3s,而客户端那时本来也在等首字节。
 export const PEEK_MAX_BYTES = 16 * 1024;
 export const PEEK_MAX_MS = 3000;
-// 正文已经开始的事件:见到它立刻放行(此时客户端本来就要开始收内容了)
-export const CONTENT_STARTED = /"type"\s*:\s*"(?:text_start|text-start|text-delta|content_block_start|content_block_delta|thinking_delta|input_json_delta|tool-input-start|tool-input-delta|response\.)/;
+// 正文已经开始的事件:见到它立刻放行(此时客户端本来就要开始收内容了)。
+// reasoning-start/reasoning-delta 是本协议(chat.mjs 解析的)thinking 事件 —— 缺了它们,
+// 推理先行的流会被扣满 3s 预算才放行,等于给每个 thinking 请求加首字节延迟。
+export const CONTENT_STARTED = /"type"\s*:\s*"(?:text_start|text-start|text-delta|reasoning-start|reasoning-delta|content_block_start|content_block_delta|thinking_delta|input_json_delta|tool-call|tool-input-start|tool-input-delta|response\.)/;
 
 /**
  * 窥探 200 响应首段,命中错误事件则返回该片段文本,否则 null。
