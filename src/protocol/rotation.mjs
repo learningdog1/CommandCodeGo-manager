@@ -5,6 +5,10 @@
 //                                   (见 window-state.mjs),窗口重置后自动恢复;
 //   200 + 流内 error 事件        —— 上游把「no credits remaining」塞进 200 的 SSE 体里,
 //                                   状态码看不出来,靠 peekEarlyError 探首段;
+//   400 + 信用措辞               —— 信用耗尽也会以 400 invalid_request_error /
+//                                   BAD_REQUEST + "insufficient credits" 到达(issue #15):
+//                                   状态码与错误码都不带额度味,只能认报文措辞,
+//                                   同样落 credit 运行窗口(不持久,充值后自动恢复);
 //   401                          —— key 失效/被吊销(实测 {"code":"UNAUTHORIZED",
 //                                   "message":"Invalid 'Authorization' header or token."},issue #14):
 //                                   运行时标记 invalid 并轮转。不落库:用量刷新/探活一旦
@@ -39,13 +43,15 @@ export async function forwardWithRotation(auth, headers, ccBody, signal, promptC
     await ensureInitialized(current.apiKey, signal);
     const response = await forwardToCC(ccBody, current.apiKey, headers, signal, promptCacheKey);
 
-    // 三路分类:状态码 402/429 → 读错误体;200 → 窥探流内错误事件;其余原样返回。
+    // 四路分类:状态码 402/429/400 → 读错误体;200 → 窥探流内错误事件;其余原样返回。
+    // 400 也要进来:实测信用耗尽回的是 400 insufficient credits(type=invalid_request_error,
+    // code=BAD_REQUEST),不认这一形态就永远不轮转(classifyExhaustion 只认信用措辞的 400)。
     let ex = null;
     if (response.status === 401) {
       // key 失效/被吊销:换下一把才有意义,留在链上只会让每笔请求都白撞一次 401。
       // 1 小时后放行重探(上限频率的有界浪费);期间用量刷新/探活成功即提前回链。
       ex = { kind: 'invalid', until: Date.now() + 60 * 60_000, persist: false };
-    } else if (response.status === 402 || response.status === 429) {
+    } else if (response.status === 402 || response.status === 429 || response.status === 400) {
       let bodyText = '';
       try { bodyText = await response.clone().text(); } catch { /* 分类失败按瞬态处理 */ }
       ex = classifyExhaustion(response.status, bodyText);

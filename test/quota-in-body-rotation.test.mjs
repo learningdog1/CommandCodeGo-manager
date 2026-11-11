@@ -1,7 +1,9 @@
 // 额度耗尽的第三种形态:上游回 **200**,错误在 SSE 体里。
-// 以及 429 真身(RATE_LIMITED + 文本 reset)与「非额度类 200 错误不轮转」的边界。
+// 以及 429 真身(RATE_LIMITED + 文本 reset)、「非额度类 200 错误不轮转」的边界,
+// 和第四种形态:信用耗尽回 **400 + insufficient credits**(issue #15)——
+// 状态码/错误码都不带额度味,不认这一形态就永不轮转、400 一路透传。
 // 旧实现:只看 402/429 + USAGE_EXCEEDED/rateLimit.window → 200 包裹的错误被当成功,
-// RATE_LIMITED 认不出,客户端直接吃「额度已用尽」;本用例锁住这三条。
+// RATE_LIMITED 认不出,客户端直接吃「额度已用尽」;本用例锁住这些路径。
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
@@ -22,7 +24,7 @@ const KEY_A = 'user_quo_a_nocredits1';
 const KEY_B = 'user_quo_b_still_ok2';
 
 // 上游行为开关(测试内切)
-let mode = 'credit200';   // credit200 | weekly429 | badrequest200 | ok
+let mode = 'credit200';   // credit200 | weekly429 | badrequest200 | credit400 | plain400 | ok
 // 账号用量四连里 A 的剩余信用:必须 >0,否则启动刷新会先把两个账户按信用耗尽封掉,
 // 测的就不是「请求侧探测」这条路了
 let creditsLeft = 70;
@@ -61,6 +63,19 @@ const mock = await startMockUpstream({
     if (mode === 'badrequest200') {
       // 请求/模型层面的 400:换账户解决不了,不该轮转
       return send(200, '{"type":"start"}\n{"type":"error","error":{"type":"server_error","message":"Bad Request","statusCode":400,"isRetryable":false}}\n');
+    }
+    if (mode === 'credit400') {
+      // issue #15 实测真身:信用耗尽回 400 + insufficient credits,
+      // type=invalid_request_error / code=BAD_REQUEST —— 全都不带额度味,只能认措辞
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'You have insufficient credits to make this request. Please purchase more credits to continue using the service.', type: 'invalid_request_error', code: 'BAD_REQUEST' } }));
+      return false;
+    }
+    if (mode === 'plain400') {
+      // 普通请求类 400:换账户解决不了,不该轮转(信用措辞才是分界线)
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Invalid request: max_tokens must be a positive integer', type: 'invalid_request_error', code: 'BAD_REQUEST' } }));
+      return false;
     }
   },
 });
@@ -150,6 +165,42 @@ test('200 里的非额度错误(Bad Request)不轮转:只打一次上游', async
   assert.equal((await rowA()).windowState.blocked, false, 'A 没被误封,仍在轮转链首位');
 });
 
+test('400 insufficient credits(issue #15):当笔轮转到 B,credit 运行窗口 6 小时', async () => {
+  // 账户真的没额度了:轮转标记后延迟 3s 的用量刷新也必须看到 0,
+  // 否则 syncFromCredits 会把刚打上的 credit 标记当成「已恢复」清掉
+  creditsLeft = 0;
+  mode = 'credit400';
+  const r = await chat();
+  assert.equal(r.status, 200, '轮转后请求成功(旧实现把 400 一路透传,永不轮转)');
+  const auths = genAuths();
+  assert.equal(auths[auths.length - 2], `Bearer ${KEY_A}`, '先打到绑定的 A(吃 400)');
+  assert.equal(auths[auths.length - 1], `Bearer ${KEY_B}`, '认出 400 信用耗尽后轮转重试走 B');
+  assert.equal(statusOf('账户A'), 'active', '走运行时标记,不落库(补额度即可恢复)');
+  const a = await rowA();
+  assert.equal(a.windowState.blocked, true);
+  assert.equal(a.windowState.window, 'credit');
+  assert.ok((a.windowState.until ?? 0) > Date.now() + 5 * 3600_000, '重探期 6 小时,不是 10 分钟探针(死号不会被反复白撞)');
+});
+
+test('400 信用标记期间:后续请求直接走 B,不再打 A', async () => {
+  const before = hitsA();
+  const r = await chat();
+  assert.equal(r.status, 200);
+  assert.equal(hitsA(), before, 'A 未再被打(解析期即被跳过)');
+});
+
+test('非信用措辞的 400 不轮转:原样透传,只打一次上游', async () => {
+  creditsLeft = 70;                                                  // 补上额度
+  await proxy.post('/admin/api/account-usage/refresh', { id: 1 });   // → 清 credit 标记
+  assert.equal((await rowA()).windowState.blocked, false, '额度恢复后 credit 标记自动解除');
+  mode = 'plain400';
+  const before = genAuths().length;
+  const r = await chat();
+  assert.equal(r.status, 400, '错误原样透传(mapCcError:400 → 400)');
+  assert.equal(genAuths().length - before, 1, '不轮转:普通 400 是请求本身的问题');
+  assert.equal((await rowA()).windowState.blocked, false, 'A 没被误封,仍在轮转链首位');
+});
+
 // ── 纯单元:分类表 ─────────────────────────────────────────
 test('classifyExhaustion 分类表(429/402/200)', async () => {
   const { classifyExhaustion } = await import('../src/protocol/window-state.mjs');
@@ -168,6 +219,10 @@ test('classifyExhaustion 分类表(429/402/200)', async () => {
     ['200 地区限制', 200, '{"type":"error","error":{"message":"This model is not available in your region.","statusCode":403}}', null],
     ['200 校验错误', 200, '{"type":"error","error":{"message":"Invalid request error. HINT: Validation error: price"}}', null],
     ['200 正常正文里出现 quota', 200, '{"id":"x","choices":[{"message":{"content":"your quota usage limit was fine"}}]}', null],
+    ['400 insufficient credits(issue #15)', 400, J({ error: { message: 'You have insufficient credits to make this request. Please purchase more credits to continue using the service.', type: 'invalid_request_error', code: 'BAD_REQUEST' } }), 'credit'],
+    ['400 一般 Bad Request', 400, J({ error: { message: 'Invalid request: max_tokens must be a positive integer', type: 'invalid_request_error', code: 'BAD_REQUEST' } }), null],
+    ['400 无额度线索', 400, J({ error: { message: 'model not found' } }), null],
+    ['400 空 body', 400, '', null],
   ];
   for (const [name, status, body, want] of cases) {
     const got = classifyExhaustion(status, body);
@@ -176,6 +231,10 @@ test('classifyExhaustion 分类表(429/402/200)', async () => {
   // 402 是账户层面的持久标记,其余是运行时窗口
   assert.equal(classifyExhaustion(402, '').persist, true);
   assert.equal(classifyExhaustion(429, cases[0][2]).persist, false);
+  // 400 信用耗尽:不落库(充值后 syncFromCredits 自动恢复),重探期 6 小时
+  const c400 = classifyExhaustion(400, cases.find(c => c[0].startsWith('400 insufficient'))[2]);
+  assert.equal(c400.persist, false);
+  assert.ok(c400.until > Date.now() + 5 * 3600_000, '无 reset 报文按 6 小时重探');
 });
 
 test('peekEarlyError:命中即报错,正常流立刻放行,且不改动原响应体', async () => {

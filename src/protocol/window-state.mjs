@@ -5,8 +5,9 @@
 //             有效期到 resetAt(未知则探针 TTL,到期自动放行重试);
 //   usage  —— account-usage 刷新发现 fiveHour/weekly/月度信用到顶时标记/已释放时清除。
 // 与 402 信用耗尽的持久标记(status='exhausted',落库)互补:那是额度没了,这是窗口到了。
-// 「额度没了」有两种到法:402/429 走状态码,上游也可能回 **200 但流里带 error 事件**
-// (no credits remaining)—— 后者由 rotation.mjs 的 peekEarlyError 探到,同样落 credit 窗口。
+// 「额度没了」有多种到法:402/429 走状态码,上游也可能回 **200 但流里带 error 事件**
+// (no credits remaining,由 rotation.mjs 的 peekEarlyError 探到),以及 **400 + 信用措辞**
+// (insufficient credits,issue #15)—— 都同样落 credit 窗口。
 const blocks = new Map();
 
 // keyId → Map(window → block)。各额度窗口独立保存,
@@ -100,14 +101,19 @@ export function syncFromCredits(keyId, data) {
   markWindowBlocked(keyId, { source: 'usage', window: 'credit', until });
 }
 
-// 上游错误体/错误事件里「这是额度问题」的措辞面(实测过的三种形态都落在这里):
+// 上游错误体/错误事件里「这是额度问题」的措辞面(实测过的四种形态都落在这里):
+//   400 {"error":{"message":"You have insufficient credits to make this request. …",
+//        "type":"invalid_request_error","code":"BAD_REQUEST"}}  ← 信用耗尽的 400 真身(issue #15),
+//        状态码/错误码都不带额度味,只能靠措辞认
 //   429 {"error":{"code":"RATE_LIMITED","message":"You've reached your weekly usage limit
 //        for your plan. Your limit resets at <ISO>."}}        ← 真身,旧实现认不出
 //   429 {"error":{"code":"USAGE_EXCEEDED","rateLimit":{"window":"fiveHour","reset":<sec>}}}
 //   200 {"type":"start"} … {"type":"error","error":{"message":"You have no credits remaining…"}}
 const QUOTA_HINT = /(usage limit|no credits|credits remaining|credit balance|insufficient|quota|payment required|billing|limit resets|reached your [a-z ]*limit)/i;
-// 信用(钱/额度池)而不是时间窗口 —— 决定持久语义与展示文案
-const CREDIT_HINT = /(no credits|credits remaining|credit balance|payment required|insufficient.?quota|top ?up|add credits)/i;
+// 信用(钱/额度池)而不是时间窗口 —— 决定持久语义与展示文案。
+// insufficient credits 必须在这里而不是只留在 QUOTA_HINT:400 的分类门槛就是本措辞面,
+// 且 kind=credit 才不会被 syncFromWindowLimits 的面板刷新当 usage 标记抖掉。
+const CREDIT_HINT = /(no credits|insufficient.?credits?|credits remaining|credit balance|payment required|insufficient.?quota|top ?up|add credits)/i;
 // SSE/JSON 里的错误事件标记:200 响应只有命中它才继续分类(否则正常正文里恰好出现
 // "quota"/"usage limit" 就会被误判成耗尽,把好账户封掉)。
 export const ERROR_MARKER = /"type"\s*:\s*"error"|"isRetryable"|"success"\s*:\s*false|"error"\s*:\s*\{/;
@@ -124,17 +130,21 @@ function resetFromText(text) {
  * 分类上游错误是否属于「额度/窗口耗尽」(可轮转):
  *   402 → 信用耗尽(持久,落库 exhausted);
  *   429 → 命中额度码/额度措辞才是耗尽(其余 429 是瞬态限速,不轮转);
- *   200 → 仅用于 peekEarlyError 探到的流内错误事件(信用/额度到顶却回了 200)。
+ *   200 → 仅用于 peekEarlyError 探到的流内错误事件(信用/额度到顶却回了 200);
+ *   400 → 仅信用耗尽以 400 到达(必须命中信用措辞,其余 400 是请求本身的问题,不轮转)。
  * 返回 { kind: 'credit' | 'fiveHour' | 'weekly' | 'usage', until, persist? } 或 null。
  *   persist=true 表示「账户层面没了」→ 调用方落库;否则只做运行时窗口标记。
  */
 export function classifyExhaustion(status, bodyText) {
   if (status === 402) return { kind: 'credit', until: 0, persist: true };
-  if (status !== 429 && status !== 200) return null;
+  if (status !== 429 && status !== 200 && status !== 400) return null;
   const text = String(bodyText ?? '');
   if (!text) return null;
   // 200 必须是错误事件;正常响应体里出现 quota 字样不算
   if (status === 200 && !ERROR_MARKER.test(text)) return null;
+  // 400 里请求类错误一大堆(参数/模型/校验),必须命中信用措辞才当耗尽,
+  // 否则会把好账号一起封掉 —— 这也是 400 信用耗尽与普通 400 的唯一区别。
+  if (status === 400 && !CREDIT_HINT.test(text)) return null;
   let parsed = null;
   try { parsed = JSON.parse(text); } catch { /* 非 JSON(含 SSE 多行)按文本兜底 */ }
   const err = parsed?.error ?? parsed ?? {};
@@ -152,7 +162,10 @@ export function classifyExhaustion(status, bodyText) {
   // reset 口径对齐 CLI extractResetAtMs:秒级(小值)×1000,ms 级原样;没有就按文本里的 ISO
   const resetRaw = typeof rl?.reset === 'number' ? (rl.reset > 1e12 ? rl.reset : rl.reset * 1000) : null;
   const reset = resetRaw ?? resetFromText(hay);
-  const until = reset && reset > Date.now() ? reset : Date.now() + 10 * 60_000;
+  // 400 信用耗尽报文里没有 reset,重探期对齐 syncFromCredits 的 6 小时;
+  // 其余无 reset 的按 10 分钟探针 TTL。
+  const ttl = status === 400 ? 6 * 3600_000 : 10 * 60_000;
+  const until = reset && reset > Date.now() ? reset : Date.now() + ttl;
   const winFromText = /five.?hour|5-hour|5 hour/i.test(hay) ? 'fiveHour'
     : /weekly|this week/i.test(hay) ? 'weekly' : null;
   const kind = CREDIT_HINT.test(hay) ? 'credit' : (win ?? winFromText ?? 'usage');
