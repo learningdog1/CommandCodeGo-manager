@@ -1,4 +1,4 @@
-// 模型清单(H4):静态内置 = command-code@1.58.1 包内权威清单(72 个,含最低套餐);
+// 模型清单(H4):静态内置 = command-code@1.88.5 包内权威清单(96 个,含最低套餐);
 // 动态 = /provider/v1/models(需 GOAT 及以上套餐,Go 套餐 403 时回落内置)。
 // refreshModels 供管理界面「一键刷新」:逐把启用的上游密钥试探,成功即更新动态缓存。
 import { CFG } from '../config.mjs';
@@ -6,14 +6,18 @@ import { log } from '../log.mjs';
 import { CC_VERSION } from './upstream.mjs';
 import { listUpstreamKeys, getUpstreamKeyById } from '../store/keys.mjs';
 
-// 由 scripts 里的一次性脚本从 command-code@1.58.1 包内
-// dist/bundled/command-code-knowledge/reference/models.md 生成(权威清单,含各模型最低套餐)。
+// 由 scripts/gen-models.mjs 从 command-code@1.88.5 包内
+// dist/bundled/command-code-knowledge/reference/models.md 生成(权威清单,含各模型最低套餐);
+// 上游目录更新后重跑该脚本同步。
 const MODELS = [
   { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", plan: "go" },
   { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", plan: "go" },
   { id: "deepseek/deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision", plan: "go" },
   { id: "deepseek/deepseek-v4-flash-fast", name: "DeepSeek V4 Flash Fast", plan: "go" },
   { id: "deepseek/deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", plan: "go" },
+  { id: "deepseek/deepseek-v4.1-flash-fast", name: "DeepSeek V4.1 Flash Fast", plan: "go" },
+  { id: "deepseek/deepseek-v4.1-flash-ultrafast", name: "DeepSeek V4.1 Flash Ultrafast", plan: "goat" },
+  { id: "moonshotai/Kimi-K3.1-Pro", name: "Kimi K3.1 Pro", plan: "go" },
   { id: "moonshotai/Kimi-K3", name: "Kimi K3", plan: "go" },
   { id: "moonshotai/Kimi-K2.7-Code", name: "Kimi K2.7 Code", plan: "go" },
   { id: "moonshotai/Kimi-K2.7-Code-Highspeed", name: "Kimi K2.7 Code HighSpeed", plan: "go" },
@@ -26,12 +30,16 @@ const MODELS = [
   { id: "zai-org/GLM-5.2-Fast", name: "GLM-5.2 Fast", plan: "go" },
   { id: "zai-org/GLM-5.1", name: "GLM-5.1", plan: "go" },
   { id: "zai-org/GLM-5", name: "GLM-5", plan: "go" },
+  { id: "minimax/minimax-m3.1-flash", name: "MiniMax M3.1 Flash", plan: "go" },
   { id: "MiniMaxAI/MiniMax-M3", name: "MiniMax M3", plan: "go" },
   { id: "MiniMaxAI/MiniMax-M2.7", name: "MiniMax M2.7", plan: "go" },
   { id: "MiniMaxAI/MiniMax-M2.5", name: "MiniMax M2.5", plan: "go" },
-  { id: "xiaomi/mimo-v2.5-pro", name: "MiMo V2.5 Pro", plan: "go" },
-  { id: "xiaomi/mimo-v2.5", name: "MiMo V2.5", plan: "go" },
+  { id: "ornith/ornith-1.5-122b", name: "Ornith 1.5 122B", plan: "go" },
+  { id: "xiaomi/mimo-v2.6-pro", name: "MiMo V2.6 Pro", plan: "go" },
+  { id: "xiaomi/mimo-v2.6-pro-ultraspeed", name: "MiMo V2.6 Pro UltraSpeed", plan: "goat" },
+  { id: "xiaomi/mimo-v2.6-flash", name: "MiMo V2.6 Flash", plan: "go" },
   { id: "Qwen/Qwen3.8-Omni-Flash", name: "Qwen 3.8 Omni Flash", plan: "go" },
+  { id: "Qwen/Qwen3.8-Max-Prime", name: "Qwen 3.8 Max Prime", plan: "goat" },
   { id: "Qwen/Qwen3.8-Max-0902", name: "Qwen 3.8 Max 0902", plan: "go" },
   { id: "Qwen/Qwen3.8-Max", name: "Qwen 3.8 Max", plan: "go" },
   { id: "Qwen/Qwen3.8-27B", name: "Qwen 3.8 27B", plan: "go" },
@@ -42,24 +50,37 @@ const MODELS = [
   { id: "Qwen/Qwen3.6-Max-Preview", name: "Qwen 3.6 Max Preview", plan: "go" },
   { id: "Qwen/Qwen3.6-Plus", name: "Qwen 3.6 Plus", plan: "go" },
   { id: "meituan/LongCat-2.0", name: "LongCat 2.0", plan: "go" },
+  { id: "stepfun/Step-5-Preview", name: "Step 5 Preview", plan: "go" },
   { id: "stepfun/Step-3.7-Flash", name: "Step 3.7 Flash", plan: "go" },
   { id: "stepfun/Step-3.5-Flash", name: "Step 3.5 Flash", plan: "go" },
   { id: "tencent/hy3-paid", name: "Tencent Hy3", plan: "go" },
   { id: "tencent/hy4-preview", name: "Tencent Hy4 Preview", plan: "go" },
   { id: "nvidia/nemotron-3-ultra-550b-a55b", name: "Nemotron 3 Ultra", plan: "go" },
+  { id: "nvidia/nemotron-3.5-super-vl", name: "Nemotron 3.5 Super VL", plan: "go" },
   { id: "thinkingmachines/inkling", name: "Inkling", plan: "go" },
   { id: "thinkingmachines/inkling-small", name: "Inkling Small", plan: "go" },
-  { id: "poolside/laguna-s-2.1-free", name: "Laguna S 2.1", plan: "go" },
-  { id: "inclusionai/ling-3.0-flash-sante:free", name: "Ling 3.0 Flash Sante", plan: "go" },
+  { id: "reflection/beam:free", name: "Beam 1.0", plan: "go" },
+  { id: "inclusionai/ling-3.1-flash", name: "Ling 3.1 Flash", plan: "go" },
+  { id: "inclusionai/ling-3.1-flash-1019", name: "Ling 3.1 Flash 1019", plan: "go" },
+  { id: "mistral/mistral-large-4", name: "Mistral Large 4", plan: "go" },
+  { id: "stealth/glyph-cluster:free", name: "Glyph Cluster", plan: "go" },
+  { id: "stealth/crouton-alpha", name: "Crouton Alpha", plan: "go" },
+  { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", plan: "goat" },
   { id: "claude-sonnet-5", name: "Claude Sonnet 5", plan: "pro" },
   { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", plan: "pro" },
   { id: "claude-fable-5-1", name: "Claude Fable 5.1", plan: "max" },
   { id: "claude-fable-5", name: "Claude Fable 5", plan: "max" },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5", plan: "max" },
   { id: "claude-opus-5", name: "Claude Opus 5", plan: "max" },
   { id: "claude-opus-4-8", name: "Claude Opus 4.8", plan: "max" },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7", plan: "max" },
+  { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", plan: "goat" },
   { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5", plan: "pro" },
   { id: "gpt-6-astra", name: "GPT-6 Astra", plan: "max" },
+  { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", plan: "max" },
+  { id: "gpt-6.1-terra", name: "GPT-6.1 Terra", plan: "pro" },
+  { id: "gpt-6-sol", name: "GPT-6 Sol", plan: "pro" },
+  { id: "gpt-6-luna", name: "GPT-6 Luna", plan: "go" },
   { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", plan: "goat" },
   { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", plan: "pro" },
   { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", plan: "go" },
@@ -67,6 +88,7 @@ const MODELS = [
   { id: "gpt-5.4", name: "GPT-5.4", plan: "pro" },
   { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", plan: "pro" },
   { id: "gpt-5.4-mini", name: "GPT-5.4 Mini", plan: "pro" },
+  { id: "google/gemini-4-argon", name: "Gemini 4 Argon", plan: "pro" },
   { id: "google/gemini-3.8-flash", name: "Gemini 3.8 Flash", plan: "goat" },
   { id: "google/gemini-3.7-flash", name: "Gemini 3.7 Flash", plan: "goat" },
   { id: "google/gemini-3.6-flash", name: "Gemini 3.6 Flash", plan: "pro" },
@@ -79,10 +101,12 @@ const MODELS = [
   { id: "meta/muse-spark-1.2-contributor", name: "Muse Spark 1.2 Contributor", plan: "go" },
   { id: "meta/muse-spark-1.3", name: "Muse Spark 1.3", plan: "goat" },
   { id: "meta/muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor", plan: "go" },
+  { id: "meta/muse-spark-open", name: "Muse Spark Open", plan: "go" },
+  { id: "meta/muse-wonder-1.0", name: "Muse Wonder", plan: "max" },
   { id: "xai/grok-4.5", name: "Grok 4.5", plan: "go" },
   { id: "xai/grok-4.6", name: "Grok 4.6", plan: "goat" },
+  { id: "xai/grok-4.7", name: "Grok 4.7", plan: "goat" },
 ];
-// 共 72 个模型
 
 let dynamicModels = null;
 let modelsLastFetch = 0;
