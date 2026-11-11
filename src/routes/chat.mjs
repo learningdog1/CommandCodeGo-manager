@@ -13,7 +13,7 @@ import { STREAM_IDLE_TIMEOUT_MS, NONSTREAM_IDLE_TIMEOUT_MS, CLIENT_DRAIN_TIMEOUT
 import { log, summarizeUpstreamError } from '../log.mjs';
 import {
   normalizeUsage, eventFinishReason, mapFinishReason, toOpenAIFinishReason, incompleteUpstreamDetail, incompleteUpstreamError,
-  mapCcError, mapCcEventError, forwardToCC, TIMEOUT_REDUCE_CONTEXT_THRESHOLD, timeoutStats,
+  mapCcError, mapCcEventError, upstreamErrorType, forwardToCC, TIMEOUT_REDUCE_CONTEXT_THRESHOLD, timeoutStats,
 } from '../protocol/upstream.mjs';
 import { nowUnix } from '../util.mjs';
 import { instrumentRequest } from '../telemetry.mjs';
@@ -287,6 +287,7 @@ async function handleChatCompletions(req, res) {
     if (!ccResponse.ok) {
       const errorText = await ccResponse.text().catch(() => '');
       const mapped = mapCcError(ccResponse.status, errorText);
+      t.errorType = upstreamErrorType(mapped);
       log('error', 'CC API error', { status: ccResponse.status, code: mapped.code, body: summarizeUpstreamError(errorText) });
       sendJSON(res, mapped.status, mapped.body);
       return;

@@ -115,10 +115,19 @@ function UpstreamPanel({ rows, clients, reload }: {
   const testKey = async (k: UpstreamKey) => {
     setTestingId(k.id);
     try {
-      const r = await api<{ ok: boolean; status?: number; models?: number | null; error?: string }>(
+      // 走 /alpha/whoami 真鉴权:旧的 /provider/v1/models 对无效 key 也回 200,
+      // 死 key 会「探活成功」而请求全 401(issue #14)
+      const r = await api<{ ok: boolean; status?: number; userName?: string | null; email?: string | null; error?: string }>(
         `/admin/api/upstream-keys/${k.id}/test`, { method: 'POST' });
-      if (r.ok) toast('ok', `探活成功:HTTP ${r.status}${r.models != null ? `,可用模型 ${r.models} 个` : ''}`);
-      else toast('err', `探活失败:${r.error ?? `HTTP ${r.status ?? '?'}`}`);
+      if (r.ok) {
+        const who = r.userName || r.email;
+        toast('ok', `探活成功:HTTP ${r.status}${who ? ` · ${who}` : ''}`);
+      } else {
+        // 401 = 上游拒绝该密钥(失效/被吊销),明说而不是笼统的「失败」
+        const why = r.status === 401 ? '(密钥无效或已被吊销,请删除后重新导入)'
+          : r.status === 403 ? '(上游拒绝访问)' : '';
+        toast('err', `探活失败:${r.error ?? `HTTP ${r.status ?? '?'}`} ${why}`.trim());
+      }
     } catch (err) {
       toast('err', `探活失败:${(err as Error).message}`);
     } finally {

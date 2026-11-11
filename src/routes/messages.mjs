@@ -16,7 +16,7 @@ import { log, summarizeUpstreamError } from '../log.mjs';
 import {
   normalizeUsage, anthropicInputTokens, eventFinishReason, mapFinishReason, toOpenAIFinishReason,
   incompleteUpstreamDetail, incompleteUpstreamError,
-  mapCcError, mapCcEventError, forwardToCC, TIMEOUT_REDUCE_CONTEXT_THRESHOLD, timeoutStats,
+  mapCcError, mapCcEventError, upstreamErrorType, forwardToCC, TIMEOUT_REDUCE_CONTEXT_THRESHOLD, timeoutStats,
 } from '../protocol/upstream.mjs';
 import { instrumentRequest } from '../telemetry.mjs';
 // ── Anthropic /v1/messages 协议转换 ─────────────────
@@ -591,6 +591,7 @@ async function handleMessages(req, res) {
     if (!ccResponse.ok) {
       const errorText = await ccResponse.text().catch(() => '');
       const mapped = mapCcError(ccResponse.status, errorText);
+      t.errorType = upstreamErrorType(mapped);
       log('error', 'CC API error (Anthropic)', { status: ccResponse.status, code: mapped.code, body: summarizeUpstreamError(errorText) });
       sendAnthropicError(res, mapped.status, mapped.body.error.type, mapped.body.error.message);
       return;

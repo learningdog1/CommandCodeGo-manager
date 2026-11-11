@@ -36,6 +36,15 @@ export function markWindowBlocked(keyId, { source, window, until }) {
   blocks.set(keyId, entries);
 }
 
+/** 清除指定窗口的运行时标记(如凭据恢复:用量刷新/探活成功时解除 invalid)。 */
+export function clearWindowBlock(keyId, window) {
+  if (keyId == null) return;
+  const entries = blocks.get(keyId);
+  if (!entries) return;
+  entries.delete(window);
+  if (!entries.size) blocks.delete(keyId);
+}
+
 export function getWindowState(keyId) {
   const list = activeBlocks(keyId);
   if (!list.length) return { blocked: false, source: null, window: null, until: null };

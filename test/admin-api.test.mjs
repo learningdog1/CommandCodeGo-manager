@@ -195,7 +195,7 @@ test('admin:PORT env 固定时改端口不落盘,返回 ignored 明确告知', a
   } finally { await s.close(); }
 });
 
-test('admin:上游 key 探活(test=1)打上游 /provider/v1/models', async () => {
+test('admin:上游 key 探活打上游 /alpha/whoami(真鉴权;models 端点不校验 key,issue #14)', async () => {
   const s = await setup();
   try {
     const created = await (await s.proxy.post('/admin/api/upstream-keys',
@@ -204,9 +204,10 @@ test('admin:上游 key 探活(test=1)打上游 /provider/v1/models', async () =>
     assert.equal(r.status, 200);
     const json = await r.json();
     assert.equal(json.ok, true);
-    const seen = s.mock.seen.find(x => x.url === '/provider/v1/models');
+    const seen = s.mock.seen.find(x => x.url.startsWith('/alpha/whoami'));
     assert.ok(seen, '探活请求到达 mock 上游');
     assert.equal(seen.headers['authorization'], 'Bearer user_probe_0001');
+    assert.ok(!s.mock.seen.some(x => x.url === '/provider/v1/models'), '不再打不校验鉴权的 models 端点');
   } finally { await s.close(); }
 });
 

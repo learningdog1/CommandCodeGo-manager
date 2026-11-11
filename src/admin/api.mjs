@@ -22,6 +22,7 @@ import { usageSummary } from '../store/usage.mjs';
 import { driftStatus } from '../protocol/upstream.mjs';
 import { keyStateStore } from '../protocol/keystate.mjs';
 import { accountUsageSnapshot, refreshAccountUsage, pinAccount } from '../protocol/account-usage.mjs';
+import { clearWindowBlock } from '../protocol/window-state.mjs';
 import { DEVICE_PROFILE, slugifyProjectPath } from '../protocol/fingerprint.mjs';
 import { MODELS } from '../protocol/models.mjs';
 
@@ -296,14 +297,26 @@ export function createAdminApi({ getInflight = () => 0 } = {}) {
       if (t && req.method === 'POST') {
         const upstream = await getUpstreamKeyById(Number(t[1]));
         if (!upstream) return end(res, 404, { error: 'upstream key not found or disabled' });
-        // 探活:直接调上游 /provider/v1/models(绕过 fetchModels 的缓存)
+        // 探活必须走**校验鉴权**的端点:/provider/v1/models 对无效 key 也回 200 模型表,
+        // 死 key 会探活「成功」而请求全 401(issue #14)。/alpha/whoami 无效 key 回
+        // 401 UNAUTHORIZED,还能顺带带出账户名。
         try {
-          const r = await fetch(`${CFG.apiBase}/provider/v1/models`, {
-            headers: { Authorization: `Bearer ${upstream.api_key}`, 'x-cli-environment': 'production' },
+          const r = await fetch(`${CFG.apiBase}/alpha/whoami?limits=1`, {
+            headers: {
+              Authorization: `Bearer ${upstream.api_key}`,
+              'User-Agent': 'cli',
+              'x-cli-environment': 'production',
+              'x-project-slug': slugifyProjectPath(DEVICE_PROFILE.projectDir),
+            },
             signal: AbortSignal.timeout(8000),
           });
           const body = r.ok ? await r.json().catch(() => null) : null;
-          return end(res, 200, { ok: r.ok, status: r.status, models: Array.isArray(body?.data) ? body.data.length : null });
+          if (r.ok) clearWindowBlock(upstream.id, 'invalid');
+          return end(res, 200, {
+            ok: r.ok, status: r.status,
+            userName: body?.user?.userName ?? body?.user?.name ?? null,
+            email: body?.user?.email ?? null,
+          });
         } catch (e) {
           return end(res, 200, { ok: false, error: e.message });
         }

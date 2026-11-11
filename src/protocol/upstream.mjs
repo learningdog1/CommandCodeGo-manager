@@ -233,6 +233,16 @@ function mapCcError(ccStatus, ccBody) {
   return { status: mapped.status, code, body: { error: { message, type: mapped.type, ...(code ? { code } : {}) } } };
 }
 
+// 请求日志「错误」列的归因串:状态码 + 上游错误码/报文摘录。
+// 只有 http_<status> 时(issue #14 的 http_401)看不出是 key 失效还是别的;
+// 带上上游 message(如 "Invalid 'Authorization' header or token.")一眼可辨。
+function upstreamErrorType(mapped) {
+  const base = `http_${mapped.status}`;
+  const msg = mapped.body?.error?.message;
+  if (!msg) return base;
+  return `${base} · ${String(msg).replace(/\s+/g, ' ').trim().slice(0, 120)}`;
+}
+
 function mapCcEventError(event) {
   const message = event.error?.message || event.message || 'Unknown CC error';
   const code = event.error?.code || event.code || null;
@@ -320,6 +330,6 @@ export {
   generateTraceparent,
   normalizeUsage, anthropicInputTokens, eventFinishReason, mapFinishReason, toOpenAIFinishReason,
   incompleteUpstreamDetail, incompleteUpstreamError,
-  CC_STATUS_MAP, mapCcError, mapCcEventError,
+  CC_STATUS_MAP, mapCcError, mapCcEventError, upstreamErrorType,
   forwardToCC,
 };

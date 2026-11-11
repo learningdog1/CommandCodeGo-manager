@@ -287,8 +287,12 @@ export function AccountUsage() {
                             {r.pinned && !disabled && <Badge kind="accent">固定中 · 承接流量</Badge>}
                             {r.windowState?.blocked && !disabled && (
                               <Badge kind="warn">
-                                窗口受限 · 自动轮转中
-                                {r.windowState.until ? ` · ${fmtDuration(r.windowState.until - now)}后恢复` : ''}
+                                {r.windowState.window === 'invalid'
+                                  ? '凭据失效 · 已跳过'
+                                  : '窗口受限 · 自动轮转中'}
+                                {r.windowState.until
+                                  ? ` · ${fmtDuration(r.windowState.until - now)}后${r.windowState.window === 'invalid' ? '重试' : '恢复'}`
+                                  : ''}
                               </Badge>
                             )}
                             {d?.plan && (

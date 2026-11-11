@@ -87,6 +87,9 @@ export function instrumentRequest(req, res, endpoint) {
         cachedTokens: u.cachedInputTokens ?? u.cachedTokens ?? 0,
         finishReason: fr,
         clientDisconnected: !res.writableEnded,
+        // 路由可在错误出口前给 t.errorType 赋更具体的归因(如上游 401 的报文摘录);
+        // 未赋值时按最终状态码兜底 http_<status>
+        errorType: t.errorType ?? null,
       };
       if (rec.statusCode >= 400 && !rec.errorType) rec.errorType = `http_${rec.statusCode}`;
       recordRequest(rec);

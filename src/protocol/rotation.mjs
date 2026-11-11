@@ -4,7 +4,12 @@
 //   429 + 额度码/额度措辞        —— 5 小时滚动 / 周窗口到顶:运行时标记到 resetAt
 //                                   (见 window-state.mjs),窗口重置后自动恢复;
 //   200 + 流内 error 事件        —— 上游把「no credits remaining」塞进 200 的 SSE 体里,
-//                                   状态码看不出来,靠 peekEarlyError 探首段。
+//                                   状态码看不出来,靠 peekEarlyError 探首段;
+//   401                          —— key 失效/被吊销(实测 {"code":"UNAUTHORIZED",
+//                                   "message":"Invalid 'Authorization' header or token."},issue #14):
+//                                   运行时标记 invalid 并轮转。不落库:用量刷新/探活一旦
+//                                   成功即自动回链,上游鉴权抖动的误判也能自愈;
+//                                   真要换 key 走删除重导(没有原地改 key 的入口)。
 // 其余 429/200 错误是瞬态限速或请求本身的问题,**不**轮转(换 key=换设备指纹,
 // 只在确属耗尽时才值得);每把密钥独立设备指纹/会话的既有设计保证了轮转后的形态自洽。
 // 已入库的直通 user_* 与 config 兜底同样参与轮转,未入库凭据保持直通。
@@ -36,7 +41,11 @@ export async function forwardWithRotation(auth, headers, ccBody, signal, promptC
 
     // 三路分类:状态码 402/429 → 读错误体;200 → 窥探流内错误事件;其余原样返回。
     let ex = null;
-    if (response.status === 402 || response.status === 429) {
+    if (response.status === 401) {
+      // key 失效/被吊销:换下一把才有意义,留在链上只会让每笔请求都白撞一次 401。
+      // 1 小时后放行重探(上限频率的有界浪费);期间用量刷新/探活成功即提前回链。
+      ex = { kind: 'invalid', until: Date.now() + 60 * 60_000, persist: false };
+    } else if (response.status === 402 || response.status === 429) {
       let bodyText = '';
       try { bodyText = await response.clone().text(); } catch { /* 分类失败按瞬态处理 */ }
       ex = classifyExhaustion(response.status, bodyText);
@@ -59,10 +68,14 @@ export async function forwardWithRotation(auth, headers, ccBody, signal, promptC
       log('warn', 'Upstream key exhausted (402)', { upstreamKeyId: keyId });
       await setUpstreamKeyStatus(keyId, 'exhausted');
     } else {
-      // 窗口/信用到顶:运行时标记到重置时间(信用未知期限按 6 小时重探);
-      // 面板侧延迟几秒拉一次该账户,inflight 去重
+      // 窗口/信用到顶/凭据失效:运行时标记到重置时间(信用未知期限按 6 小时重探);
+      // 面板侧延迟几秒拉一次该账户,inflight 去重(invalid 的 key 这次刷新会失败,
+      // 账号页正好以「拉取失败」暴露问题)
       markWindowBlocked(keyId, { source: 'live', window: ex.kind, until: ex.until });
-      log('warn', ex.kind === 'credit' ? 'Upstream key out of credits' : 'Upstream window limit hit', {
+      const why = ex.kind === 'credit' ? 'Upstream key out of credits'
+        : ex.kind === 'invalid' ? 'Upstream key rejected (401), rotating away'
+        : 'Upstream window limit hit';
+      log('warn', why, {
         upstreamKeyId: keyId, window: ex.kind, until: new Date(ex.until).toISOString(),
       });
       const t = setTimeout(() => { refreshAccountUsage(keyId).catch(() => {}); }, 3000);
